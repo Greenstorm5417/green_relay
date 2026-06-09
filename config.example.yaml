@@ -1,0 +1,49 @@
+# SMS Microservice configuration (YAML).
+#
+# Resolution order:
+#   1. The file named by the SMS_CONFIG_FILE environment variable, or
+#   2. a `config.yaml` placed next to the executable.
+# Any value can be overridden at runtime by an environment variable of the
+# same name (e.g. LISTEN_ADDR=0.0.0.0:9000). Environment values win.
+#
+# Copy this file to `config.yaml` and adjust the values below.
+
+# --- Required ---
+
+# Address the HTTP API + admin portal binds to (host:port).
+LISTEN_ADDR: "0.0.0.0:8080"
+
+# Path to the SQLite database file. Created if it does not exist.
+DATABASE_PATH: "./sms.db"
+
+# --- Optional (defaults shown; uncomment to override) ---
+
+# Serial device for the GSM modem.
+#SERIAL_PORT: "/dev/ttyUSB2"
+
+# Modem serial baud rate (must be > 0).
+#BAUD_RATE: 115200
+
+# SMS service center number. Leave unset to use the SIM's default.
+#SERVICE_CENTER_NUMBER: "+14155550000"
+
+# AT command timeout, in seconds (1-60).
+#AT_TIMEOUT_SECS: 5
+
+# Default per-API-key request rate limit (1-10000).
+#DEFAULT_RATE_LIMIT: 100
+
+# Rate-limit window, in seconds (> 0).
+#RATE_WINDOW_SECS: 60
+
+# Minimum log level: TRACE, DEBUG, INFO, WARN, or ERROR.
+#LOG_LEVEL: "INFO"
+
+# Max serial-port reopen attempts before the modem manager gives up (>= 1).
+#REOPEN_MAX_ATTEMPTS: 10
+
+# Max send attempts per outbound message (>= 1).
+#SEND_MAX_ATTEMPTS: 3
+
+# Delay between send retries, in seconds.
+#SEND_RETRY_DELAY_SECS: 5

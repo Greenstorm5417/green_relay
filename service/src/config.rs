@@ -1,6 +1,6 @@
 //! Configuration loader.
 //!
-//! Loads configuration from a file and environment variables, with
+//! Loads configuration from a YAML file and environment variables, with
 //! environment values overriding file values (Req 11.1). Required values are
 //! validated at startup; on a missing or invalid value `load` returns a
 //! [`ConfigError`] that names the specific offending key (Req 11.5).
@@ -35,8 +35,9 @@ pub const KEY_SEND_RETRY_DELAY_SECS: &str = "SEND_RETRY_DELAY_SECS";
 /// The environment variable naming the path to the configuration file.
 pub const KEY_CONFIG_FILE: &str = "SMS_CONFIG_FILE";
 
-/// Default configuration file path used when [`KEY_CONFIG_FILE`] is unset.
-pub const DEFAULT_CONFIG_FILE: &str = "/etc/sms-microservice/config";
+/// Default configuration file name. When [`KEY_CONFIG_FILE`] is unset the
+/// loader looks for this file next to the running executable.
+pub const DEFAULT_CONFIG_FILENAME: &str = "config.yaml";
 
 /// All configuration keys the loader recognizes from the environment.
 pub const KNOWN_KEYS: &[&str] = &[
@@ -176,45 +177,52 @@ pub fn merge_env_over_file(
     merged
 }
 
-/// Parse the contents of a configuration file into a key/value map.
+/// Parse the contents of a YAML configuration file into a flat key/value map.
 ///
-/// The format is simple line-oriented `KEY = VALUE`:
-/// - blank lines and lines whose first non-whitespace character is `#` are
-///   ignored,
-/// - the key and value are split on the first `=`,
-/// - surrounding whitespace is trimmed from both key and value,
-/// - a single layer of matching single or double quotes around the value is
-///   stripped.
-pub fn parse_config_file(contents: &str) -> HashMap<String, String> {
+/// The file must be a single top-level YAML mapping whose values are scalars
+/// (strings, numbers, or booleans); each value is normalized to its string
+/// form so it flows through the same validation path as environment variables.
+/// An empty file (or an explicit `null`) yields an empty map, and a key whose
+/// value is `null` is treated as unset. Nested mappings or sequences are
+/// rejected with a descriptive reason.
+pub fn parse_config_file(contents: &str) -> Result<HashMap<String, String>, String> {
+    let value: serde_yaml::Value = serde_yaml::from_str(contents).map_err(|e| e.to_string())?;
+
     let mut map = HashMap::new();
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
+    match value {
+        serde_yaml::Value::Null => Ok(map),
+        serde_yaml::Value::Mapping(mapping) => {
+            for (key, val) in mapping {
+                let serde_yaml::Value::String(key) = key else {
+                    return Err(format!("configuration keys must be strings, found {key:?}"));
+                };
+                match scalar_to_string(&val) {
+                    Some(text) => {
+                        map.insert(key, text);
+                    }
+                    // A null value means the key was written but left unset.
+                    None if val.is_null() => {}
+                    None => {
+                        return Err(format!(
+                            "value for `{key}` must be a scalar (string, number, or boolean)"
+                        ));
+                    }
+                }
+            }
+            Ok(map)
         }
-        let Some((raw_key, raw_value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        let key = raw_key.trim();
-        if key.is_empty() {
-            continue;
-        }
-        let value = strip_quotes(raw_value.trim());
-        map.insert(key.to_string(), value.to_string());
+        _ => Err("configuration file must be a YAML mapping of key/value pairs".to_string()),
     }
-    map
 }
 
-/// Strip one layer of matching surrounding single or double quotes.
-fn strip_quotes(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    if let (Some(&first), Some(&last)) = (bytes.first(), bytes.last())
-        && bytes.len() >= 2
-        && ((first == b'"' && last == b'"') || (first == b'\'' && last == b'\''))
-    {
-        return s.get(1..s.len().saturating_sub(1)).unwrap_or(s);
+/// Normalize a scalar YAML value to its string form, or `None` if non-scalar.
+fn scalar_to_string(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        _ => None,
     }
-    s
 }
 
 impl Config {
@@ -387,6 +395,21 @@ fn env_map() -> HashMap<String, String> {
     map
 }
 
+/// Resolve the default configuration file path: `config.yaml` beside the
+/// running executable, falling back to the bare filename in the working
+/// directory if the executable path cannot be determined.
+fn default_config_path() -> String {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        return parent
+            .join(DEFAULT_CONFIG_FILENAME)
+            .to_string_lossy()
+            .into_owned();
+    }
+    DEFAULT_CONFIG_FILENAME.to_string()
+}
+
 /// Read the configuration file referenced by [`KEY_CONFIG_FILE`] (or the
 /// default path) into a key/value map.
 ///
@@ -396,12 +419,15 @@ fn env_map() -> HashMap<String, String> {
 /// a [`ConfigError::FileRead`].
 fn file_map() -> Result<HashMap<String, String>, ConfigError> {
     let explicit = std::env::var(KEY_CONFIG_FILE).ok();
-    let path = explicit
-        .clone()
-        .unwrap_or_else(|| DEFAULT_CONFIG_FILE.to_string());
+    let path = explicit.clone().unwrap_or_else(default_config_path);
 
     match std::fs::read_to_string(&path) {
-        Ok(contents) => Ok(parse_config_file(&contents)),
+        Ok(contents) => {
+            parse_config_file(&contents).map_err(|reason| ConfigError::FileRead {
+                path: path.clone(),
+                reason,
+            })
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && explicit.is_none() => {
             Ok(HashMap::new())
         }
@@ -639,5 +665,68 @@ mod tests {
         let high = Config::from_map(&map).expect("upper bounds should parse");
         assert_eq!(high.at_timeout_secs, 60);
         assert_eq!(high.default_rate_limit, 1);
+    }
+
+    #[test]
+    fn yaml_empty_file_is_empty_map() {
+        // An empty config file must parse to an empty map so the environment
+        // can supply every value (relied on by the lifecycle integration test).
+        assert!(parse_config_file("").expect("empty parses").is_empty());
+        assert!(
+            parse_config_file("# only a comment\n")
+                .expect("comment-only parses")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn yaml_scalars_normalize_to_strings() {
+        let yaml = "\
+LISTEN_ADDR: \"0.0.0.0:8080\"
+BAUD_RATE: 115200
+SEND_RETRY_DELAY_SECS: 5
+SERVICE_CENTER_NUMBER: \"+14155550000\"
+";
+        let map = parse_config_file(yaml).expect("valid yaml parses");
+        assert_eq!(
+            map.get(KEY_LISTEN_ADDR).map(String::as_str),
+            Some("0.0.0.0:8080")
+        );
+        // Numbers are normalized to their string form for uniform validation.
+        assert_eq!(map.get(KEY_BAUD_RATE).map(String::as_str), Some("115200"));
+        assert_eq!(
+            map.get(KEY_SEND_RETRY_DELAY_SECS).map(String::as_str),
+            Some("5")
+        );
+
+        // The parsed map flows through the same validation as the environment.
+        let mut full = map.clone();
+        full.insert(KEY_DATABASE_PATH.to_string(), "./sms.db".to_string());
+        let config = Config::from_map(&full).expect("yaml-sourced config validates");
+        assert_eq!(config.baud_rate, 115_200);
+        assert_eq!(config.send_retry_delay_secs, 5);
+    }
+
+    #[test]
+    fn yaml_null_value_is_treated_as_unset() {
+        let map = parse_config_file("LOG_LEVEL:\n").expect("null value parses");
+        assert!(!map.contains_key(KEY_LOG_LEVEL));
+    }
+
+    #[test]
+    fn yaml_nested_value_is_rejected() {
+        let yaml = "\
+LISTEN_ADDR:
+  host: 0.0.0.0
+  port: 8080
+";
+        let err = parse_config_file(yaml).expect_err("nested mapping must be rejected");
+        assert!(err.contains("LISTEN_ADDR"), "reason should name the key: {err}");
+    }
+
+    #[test]
+    fn yaml_non_mapping_is_rejected() {
+        // A top-level sequence is not a key/value configuration.
+        parse_config_file("- one\n- two\n").expect_err("sequence must be rejected");
     }
 }

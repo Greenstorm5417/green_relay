@@ -6,6 +6,15 @@ edition = "2024"
 # Library target exposes the crate internals so the integration tests under
 # `tests/` and the benches under `benches/` can drive them; the binary is a
 # thin shell over `run()`.
+[features]
+# Default builds ship without the bundled web UI.
+default = []
+# Serve the statically exported Next.js admin UI (built from `web-ui/` with
+# Bun) from the service. The build script produces the static assets in
+# `web-ui/out` that this feature wires into the router. Pulls in `tower-http`
+# for static-file serving.
+web-ui = ["dep:tower-http"]
+
 [lib]
 name = "sms_micro_service"
 path = "src/lib.rs"
@@ -18,6 +27,8 @@ path = "src/main.rs"
 tokio = { version = "1.52.3", features = ["full"] }
 axum = "0.8.9"
 tower = "0.5.3"
+# Static-file serving for the bundled web UI; only compiled with `web-ui`.
+tower-http = { version = "0.6", features = ["fs"], optional = true }
 tokio-serial = "5.4"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono"] }
 argon2 = "0.5.3"
@@ -31,6 +42,11 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+# YAML configuration parsing. serde_yaml is archived but API-frozen and the
+# most widely deployed option; the config file is a trusted local input, so the
+# archival status carries minimal risk. Revisit if a maintained successor
+# stabilizes.
+serde_yaml = "0.9"
 chrono = { version = "0.4.45", features = ["serde"] }
 
 [dev-dependencies]

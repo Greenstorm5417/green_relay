@@ -30,6 +30,8 @@ pub mod models;
 pub mod modem;
 pub mod ratelimit;
 pub mod sms;
+#[cfg(feature = "web-ui")]
+pub mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,7 +117,12 @@ fn build_router(config: &config::Config, db: db::Db, modem: ModemHandle) -> axum
         Arc::new(ModemHandleStatusProvider(modem));
     let admin_state = admin::AdminState::new(db, modem_provider);
 
-    api::router(api_state).merge(admin::router(admin_state))
+    let router = api::router(api_state).merge(admin::router(admin_state));
+
+    #[cfg(feature = "web-ui")]
+    let router = router.merge(web::router());
+
+    router
 }
 
 /// Resolve once a termination signal is received: `SIGTERM` (Unix) or Ctrl-C (any platform).
