@@ -1,0 +1,56 @@
+[package]
+name = "sms_micro_service"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sms_micro_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sms_micro_service"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.52.3", features = ["full"] }
+axum = "0.8.9"
+tower = "0.5.3"
+tokio-serial = "5.4"
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono"] }
+argon2 = "0.5.3"
+# Enables the `getrandom` feature on the shared `password-hash`/`rand_core`
+# stack so `OsRng` is available for generating Argon2 salts (Req 5.2).
+password-hash = { version = "0.5", features = ["getrandom"] }
+sha2 = "0.11.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+chrono = { version = "0.4.45", features = ["serde"] }
+
+[dev-dependencies]
+proptest = "1.11.0"
+serde_json = "1.0.150"
+chrono = { version = "0.4.45", features = ["serde"] }
+# `ServiceExt::oneshot` (the `util` feature) lets integration tests drive HTTP
+# requests directly against the Axum router without binding a TCP socket.
+tower = { version = "0.5.3", features = ["util"] }
+
+# `libc` is only needed by the Unix-gated lifecycle integration tests to send
+# `SIGTERM` to the spawned service binary. Scoped to `cfg(unix)` so Windows
+# builds (which gate those tests out) never reference it.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+debug = false
+split-debuginfo = "off" 
+strip = true
+debug-assertions = false
+overflow-checks = false
+lto = true
+panic = 'unwind'
+incremental = false
+codegen-units = 1
+rpath = false
