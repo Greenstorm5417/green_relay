@@ -35,12 +35,29 @@ chrono = { version = "0.4.45", features = ["serde"] }
 # `ServiceExt::oneshot` (the `util` feature) lets integration tests drive HTTP
 # requests directly against the Axum router without binding a TCP socket.
 tower = { version = "0.5.3", features = ["util"] }
+# Criterion drives the no-admin hot-path benchmarks under `cargo bench`. It runs
+# as an ordinary bench target (no elevated profiler / ETW session required),
+# which is the portable way to profile and validate optimizations on Windows.
+criterion = "0.5"
+
+[[bench]]
+name = "hotpath"
+harness = false
 
 # `libc` is only needed by the Unix-gated lifecycle integration tests to send
 # `SIGTERM` to the spawned service binary. Scoped to `cfg(unix)` so Windows
 # builds (which gate those tests out) never reference it.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+# Optimize dependencies even in dev/test builds while leaving our own crate
+# unoptimized for fast incremental compiles and good debug info. Crypto-heavy
+# dependencies (argon2, sha2) and sqlx are dramatically slower when compiled
+# without optimizations, which made the Argon2 property test (`admin_property_19`)
+# take minutes under `cargo test`; building deps at opt-level 3 brings the full
+# test suite back down to seconds without reducing test coverage.
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

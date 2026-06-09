@@ -95,14 +95,21 @@ pub fn key_identifier(presented_key: &str) -> String {
 }
 
 /// Lowercase hex-encode a byte slice.
+///
+/// Uses a direct nibble lookup table rather than `write!(.., "{:02x}")` per
+/// byte: the formatting machinery dominated `key_identifier`, which runs on
+/// every authenticated request. Each output byte is an ASCII hex digit, so the
+/// assembled buffer is valid UTF-8 by construction.
 fn to_hex(bytes: &[u8]) -> String {
-    use core::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        // Writing formatted bytes into a String is infallible.
-        let _ = write!(s, "{b:02x}");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0f) as usize]);
     }
-    s
+    // SAFETY: every pushed byte is an ASCII hex digit (`0-9a-f`), so `out` is
+    // guaranteed to be valid UTF-8.
+    unsafe { String::from_utf8_unchecked(out) }
 }
 
 /// Pre-lookup guard for a presented key.
@@ -227,20 +234,40 @@ pub fn authenticate<S: KeyStore + ?Sized>(
     }
 
     let identifier = key_identifier(presented);
+    authenticate_identified(&identifier, store, tracker, now)
+}
 
+/// Authenticate using an already-computed key [`key_identifier`].
+///
+/// This is the identifier-keyed core of [`authenticate`]: it performs the
+/// lockout check and the active-key lookup without recomputing the SHA-256
+/// identifier. The request hot path (the auth middleware) derives the
+/// identifier exactly once — for the pre-lookup guard and the lockout check —
+/// then reuses it here and for the audit record, avoiding the repeated hashing
+/// that recomputing from the plaintext would incur (Req 3.1, 3.2, 3.3, 3.4,
+/// 3.8).
+///
+/// The caller is responsible for having applied [`passes_guard`] to the
+/// presented key before deriving the identifier.
+pub fn authenticate_identified<S: KeyStore + ?Sized>(
+    identifier: &str,
+    store: &S,
+    tracker: &mut FailureTracker,
+    now: Instant,
+) -> AuthOutcome {
     // Lockout takes precedence over any lookup so a locked-out identifier
     // performs no business processing.
-    if tracker.is_locked(&identifier, now) {
+    if tracker.is_locked(identifier, now) {
         return AuthOutcome::LockedOut;
     }
 
-    match store.lookup_active(&identifier) {
+    match store.lookup_active(identifier) {
         Some(id) => {
-            tracker.record_success(&identifier);
+            tracker.record_success(identifier);
             AuthOutcome::Authorized(id)
         }
         None => {
-            tracker.record_failure(&identifier, now);
+            tracker.record_failure(identifier, now);
             AuthOutcome::Unauthorized
         }
     }
@@ -296,10 +323,23 @@ pub fn build_audit_record(
     outcome: &AuthOutcome,
     timestamp: DateTime<Utc>,
 ) -> AuthAuditRecord {
+    build_audit_record_with_identifier(key_identifier(presented), outcome, timestamp)
+}
+
+/// Build the audit/log record from an already-computed key [`key_identifier`].
+///
+/// The identifier-keyed counterpart to [`build_audit_record`], letting the
+/// request hot path reuse the identifier it already derived instead of hashing
+/// the plaintext key again (Req 3.5, 3.6, 7.6).
+pub fn build_audit_record_with_identifier(
+    key_identifier: String,
+    outcome: &AuthOutcome,
+    timestamp: DateTime<Utc>,
+) -> AuthAuditRecord {
     AuthAuditRecord {
         event_type: "api_key_auth",
         result: AuthResult::from(outcome),
-        key_identifier: key_identifier(presented),
+        key_identifier,
         timestamp,
     }
 }

@@ -93,23 +93,25 @@ impl SerialTransport for MockTransport {
     async fn write_bytes(&mut self, _data: &[u8]) -> std::io::Result<()> {
         // A command's bytes are now on the wire: it is outstanding.
         self.tracker.begin();
-        // Yield to the runtime so any concurrent exchange would interleave here.
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        // Yield to the runtime (without a fixed delay) so any concurrent
+        // exchange would have the opportunity to interleave here and be
+        // observed by `max_in_flight`.
+        tokio::task::yield_now().await;
         Ok(())
     }
 
-    async fn read_line(&mut self, timeout: Duration) -> std::io::Result<Option<String>> {
+    async fn read_line(&mut self, _timeout: Duration) -> std::io::Result<Option<String>> {
         if self.tracker.is_mid_exchange() {
             // Mid-exchange: yield, then answer with a terminating `OK`, which
             // completes the outstanding command.
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
             self.tracker.end();
             Ok(Some("OK".to_string()))
         } else {
-            // Idle URC poll: no unsolicited data ever arrives from this mock,
-            // so emulate a brief wait and report a timeout (no line).
-            let nap = timeout.min(Duration::from_millis(1));
-            tokio::time::sleep(nap).await;
+            // Idle URC poll: no unsolicited data ever arrives from this mock.
+            // A short real sleep (rather than a busy yield) avoids spinning the
+            // session loop while it waits for the next command or shutdown.
+            tokio::time::sleep(Duration::from_millis(1)).await;
             Ok(None)
         }
     }

@@ -191,11 +191,16 @@ impl RateLimiter {
         window: Duration,
         now: Instant,
     ) -> RateDecision {
-        let state = self
-            .states
-            .entry(key.to_string())
-            .or_insert_with(|| WindowState::new(now));
-        decide(state, limit, window, now)
+        // Hot path: an already-tracked key is decided in place without
+        // allocating a new owned key. Only the first request for a key pays
+        // for the `String` allocation that inserts its window state.
+        if let Some(state) = self.states.get_mut(key) {
+            return decide(state, limit, window, now);
+        }
+        let mut state = WindowState::new(now);
+        let decision = decide(&mut state, limit, window, now);
+        self.states.insert(key.to_string(), state);
+        decision
     }
 
     /// Current accumulated request count for `key`, or `0` if the key has not

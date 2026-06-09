@@ -177,11 +177,6 @@ const MULTI_PART_MAX: usize = 153;
 /// Maximum number of parts a single message may be split into (Req 1.8).
 const MAX_PARTS: usize = 10;
 
-/// GSM-7 "extension table" characters. Each of these is encoded as two
-/// septets (an escape septet followed by the character septet), so they
-/// count as two GSM-7 characters for length and segmentation purposes.
-const GSM7_EXTENSION_CHARS: [char; 9] = ['^', '{', '}', '\\', '[', '~', ']', '|', '€'];
-
 /// A single SMS segment with its 1-based sequence number and text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
@@ -216,11 +211,14 @@ impl std::error::Error for SegmentError {}
 
 /// Number of GSM-7 septets a single character occupies: characters in the
 /// GSM-7 extension table take two septets, all others take one.
+///
+/// Implemented as a direct `match` rather than an array `contains` scan: this
+/// runs once per character during length measurement and segmentation, so the
+/// branch-friendly match keeps the per-character cost minimal.
 fn gsm7_char_len(c: char) -> usize {
-    if GSM7_EXTENSION_CHARS.contains(&c) {
-        2
-    } else {
-        1
+    match c {
+        '^' | '{' | '}' | '\\' | '[' | '~' | ']' | '|' | '€' => 2,
+        _ => 1,
     }
 }
 
@@ -239,15 +237,19 @@ fn gsm7_len(s: &str) -> usize {
 /// body exactly. (Req 1.8)
 pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
     // Single part if the whole body fits within the single-part budget.
-    if gsm7_len(body) <= SINGLE_PART_MAX {
+    let total_septets = gsm7_len(body);
+    if total_septets <= SINGLE_PART_MAX {
         return Ok(vec![Segment {
             seq: 1,
             text: body.to_string(),
         }]);
     }
 
-    // Otherwise split into <= MULTI_PART_MAX-septet parts on char boundaries.
-    let mut parts: Vec<String> = Vec::new();
+    // Otherwise split into <= MULTI_PART_MAX-septet parts on char boundaries,
+    // building the `Segment`s directly (no intermediate `Vec<String>` and
+    // re-collect). The part count is bounded by the validated body length, so
+    // it comfortably fits the `u8` sequence number.
+    let mut segments: Vec<Segment> = Vec::with_capacity(total_septets / MULTI_PART_MAX + 1);
     let mut current = String::new();
     let mut current_len = 0usize;
 
@@ -257,31 +259,26 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
         // per-part budget. clen is at most 2 and MULTI_PART_MAX is >= 2, so a
         // single character always fits in a fresh part.
         if current_len + clen > MULTI_PART_MAX {
-            parts.push(std::mem::take(&mut current));
+            let seq = (segments.len() + 1) as u8;
+            segments.push(Segment {
+                seq,
+                text: std::mem::take(&mut current),
+            });
             current_len = 0;
         }
         current.push(c);
         current_len += clen;
     }
     if !current.is_empty() {
-        parts.push(current);
+        let seq = (segments.len() + 1) as u8;
+        segments.push(Segment { seq, text: current });
     }
 
-    if parts.len() > MAX_PARTS {
+    if segments.len() > MAX_PARTS {
         return Err(SegmentError::TooManyParts {
-            required: parts.len(),
+            required: segments.len(),
         });
     }
-
-    let segments = parts
-        .into_iter()
-        .enumerate()
-        .map(|(i, text)| Segment {
-            // i < MAX_PARTS (10), so the cast to u8 never truncates.
-            seq: (i + 1) as u8,
-            text,
-        })
-        .collect();
 
     Ok(segments)
 }

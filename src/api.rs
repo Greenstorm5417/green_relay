@@ -42,8 +42,8 @@ use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
 
 use crate::auth::{
-    ApiKeyId, AuthOutcome, FailureTracker, KeyStore, authenticate, build_audit_record,
-    key_identifier, passes_guard,
+    ApiKeyId, AuthOutcome, FailureTracker, KeyStore, authenticate_identified,
+    build_audit_record_with_identifier, key_identifier, passes_guard,
 };
 use crate::db::Db;
 use crate::health::{
@@ -381,18 +381,22 @@ async fn auth_middleware<M: ModemPort>(
 
     // Pre-lookup guard: empty or over-length keys never reach the store (Req 3.7).
     if !passes_guard(&presented) {
-        emit_auth_audit(&presented, &AuthOutcome::Unauthorized, timestamp);
+        emit_auth_audit(&key_identifier(&presented), &AuthOutcome::Unauthorized, timestamp);
         return unauthorized_response();
     }
 
+    // Derive the non-reversible identifier exactly once and reuse it for the
+    // lockout check, the store lookup, the authenticate core, and the audit
+    // record, rather than re-hashing the plaintext key on each step.
     let identifier = key_identifier(&presented);
 
     // Lockout short-circuit so a locked-out identifier performs no lookup or
-    // business processing (Req 3.8).
+    // business processing (Req 3.8). Checking before the DB lookup also avoids
+    // a query for keys that are already locked out.
     {
         let tracker = state.auth_failures.lock().expect("auth tracker poisoned");
         if tracker.is_locked(&identifier, now) {
-            emit_auth_audit(&presented, &AuthOutcome::LockedOut, timestamp);
+            emit_auth_audit(&identifier, &AuthOutcome::LockedOut, timestamp);
             return unauthorized_response();
         }
     }
@@ -416,10 +420,10 @@ async fn auth_middleware<M: ModemPort>(
     };
     let outcome = {
         let mut tracker = state.auth_failures.lock().expect("auth tracker poisoned");
-        authenticate(&presented, &store, &mut tracker, now)
+        authenticate_identified(&identifier, &store, &mut tracker, now)
     };
 
-    emit_auth_audit(&presented, &outcome, timestamp);
+    emit_auth_audit(&identifier, &outcome, timestamp);
 
     match outcome {
         AuthOutcome::Authorized(id) => {
@@ -437,8 +441,8 @@ async fn auth_middleware<M: ModemPort>(
 
 /// Emit a structured audit/log record for an auth attempt, carrying only the
 /// non-reversible key identifier (never the plaintext key) (Req 3.6, 7.6).
-fn emit_auth_audit(presented: &str, outcome: &AuthOutcome, timestamp: chrono::DateTime<Utc>) {
-    let record = build_audit_record(presented, outcome, timestamp);
+fn emit_auth_audit(identifier: &str, outcome: &AuthOutcome, timestamp: chrono::DateTime<Utc>) {
+    let record = build_audit_record_with_identifier(identifier.to_string(), outcome, timestamp);
     tracing::info!(
         event_type = record.event_type,
         result = ?record.result,
