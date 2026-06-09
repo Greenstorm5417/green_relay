@@ -101,8 +101,6 @@ impl std::error::Error for RateLimitConfigError {}
 pub fn decide(state: &mut WindowState, limit: u32, window: Duration, now: Instant) -> RateDecision {
     let elapsed = now.saturating_duration_since(state.window_start);
 
-    // Window elapsed: reset and count this request as the first of the new
-    // window. The reset clears the prior count to zero before counting.
     if elapsed >= window {
         state.window_start = now;
         state.count = 1;
@@ -112,13 +110,11 @@ pub fn decide(state: &mut WindowState, limit: u32, window: Duration, now: Instan
     }
 
     if state.count < limit {
-        // Under the limit: allow and increment by exactly one.
         state.count = state.count.saturating_add(1);
         RateDecision::Allow {
             remaining: limit.saturating_sub(state.count),
         }
     } else {
-        // At or over the limit: reject and leave the count unchanged.
         RateDecision::Reject {
             retry_after_secs: retry_after_secs(window, elapsed),
         }
@@ -131,12 +127,8 @@ pub fn decide(state: &mut WindowState, limit: u32, window: Duration, now: Instan
 /// whole second and clamped to `1..=window_secs` so it is always a positive
 /// integer no greater than the configured window length (Req 4.3).
 fn retry_after_secs(window: Duration, elapsed: Duration) -> u64 {
-    // The integer window length in seconds, at least 1 so the upper bound is
-    // never zero for any positive window.
     let window_secs = window.as_secs().max(1);
     let remaining = window.saturating_sub(elapsed);
-    // Round up: any non-zero fraction of a second still requires waiting that
-    // second out before the window resets.
     let secs = remaining.as_secs_f64().ceil() as u64;
     secs.clamp(1, window_secs)
 }
@@ -177,9 +169,6 @@ impl RateLimiter {
     /// Make a rate-limit decision for `key`, creating its window state on
     /// first use. The state for any other key is left untouched (Req 4.4).
     pub fn check(&mut self, key: &str, limit: u32, window: Duration, now: Instant) -> RateDecision {
-        // Hot path: an already-tracked key is decided in place without
-        // allocating a new owned key. Only the first request for a key pays
-        // for the `String` allocation that inserts its window state.
         if let Some(state) = self.states.get_mut(key) {
             return decide(state, limit, window, now);
         }
@@ -256,7 +245,6 @@ mod tests {
             window_start: start,
         };
 
-        // Exactly at the window boundary: the window has elapsed and resets.
         let later = start + window;
         let decision = decide(&mut state, 100, window, later);
         assert_eq!(decision, RateDecision::Allow { remaining: 99 });
@@ -285,8 +273,6 @@ mod tests {
 
     #[test]
     fn retry_after_never_below_one() {
-        // Almost the whole window has elapsed but not quite; retry must still
-        // be at least 1 second.
         let window = Duration::from_secs(60);
         let elapsed = window - Duration::from_millis(100);
         assert_eq!(retry_after_secs(window, elapsed), 1);

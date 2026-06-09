@@ -1,29 +1,7 @@
-//! REST API layer: Axum endpoint handlers (task 13.1).
-//!
-//! This module implements the endpoint handlers described in `design.md` §2:
-//!
-//! | Method | Path                        | Description                         | Requirements        |
-//! |--------|-----------------------------|-------------------------------------|---------------------|
-//! | POST   | `/api/v1/messages`          | Send an SMS                         | 1.1, 1.4, 1.5, 10.4 |
-//! | GET    | `/api/v1/messages/inbound`  | List inbound messages (desc)        | 2.4                 |
-//! | GET    | `/api/v1/messages/{id}`     | Fetch one outbound message status   | 1.4, 1.5            |
-//! | GET    | `/health`                   | Serial + SIM state                  | 9.1                 |
-//! | GET    | `/status`                   | Signal, registration, operator      | 9.2, 9.7            |
-//!
-//! The send handler validates the request, runs the pure deliverability gate
-//! (Req 10.4), persists a `queued` outbound record (Req 1.1), and dispatches
-//! the actual transmission to the Modem Manager on a background task so the
-//! acceptance response returns promptly (within 2 seconds, Req 1.1). The
-//! background dispatch updates the record to `sent`/`failed` from the modem's
-//! result (Req 1.4, 1.5), or leaves it `queued` to retry when the modem is not
-//! yet registered (Req 10.5).
-//!
-//! The Modem Manager is reached through the [`ModemPort`] trait rather than a
-//! concrete handle. This mirrors the `SerialTransport` abstraction in the
-//! `modem` module: production wires the real [`ModemHandle`], while tests can
-//! supply a stub with a fixed status snapshot and a canned send result. The
-//! authentication and rate-limit middleware and the assembled router are wired
-//! in task 13.2.
+//! REST API: Axum handlers for send, inbound, status, health endpoints.
+//! Validates requests, runs deliverability gate, persists messages, dispatches
+//! to Modem Manager. Authentication & rate-limit layers via middleware.
+//! ModemPort trait enables testing with stubs.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -68,19 +46,9 @@ pub const DEFAULT_RATE_WINDOW_SECS: u64 = 60;
 // Modem access abstraction
 // ---------------------------------------------------------------------------
 
-/// The slice of Modem Manager behavior the API layer depends on.
-///
-/// Implemented for the real [`ModemHandle`] in production; abstracting it as a
-/// trait (as the `modem` module does for its serial transport) keeps the
-/// handlers testable with an in-memory stub. Implementors must be cheap to
-/// clone and `Send + Sync + 'static` so handler state can be shared across the
-/// Axum router and the background send-dispatch task.
+/// Abstraction over Modem Manager for testability.
 pub trait ModemPort: Clone + Send + Sync + 'static {
-    /// The modem's current health/status snapshot, served from shared state so
-    /// it is available even while the serial port is reconnecting.
     fn status_snapshot(&self) -> ModemStatusSnapshot;
-
-    /// Dispatch an SMS send to the Modem Manager and await its result.
     fn send(&self, to: String, body: String) -> impl Future<Output = SendResult> + Send;
 }
 
@@ -98,36 +66,19 @@ impl ModemPort for ModemHandle {
 // Shared handler state
 // ---------------------------------------------------------------------------
 
-/// Shared state for the REST API handlers.
-///
-/// Cloning is cheap: the database handle and the modem port are both
-/// reference-counted internally. `retry_after_secs` is the value advertised in
-/// the `Retry-After` header when a send is rejected by the deliverability gate
-/// (Req 10.4) or when the schema is not yet ready (Req 6.5).
+/// Shared state for REST API handlers. Cloning is cheap (internal Arcs).
 #[derive(Clone)]
 pub struct ApiState<M: ModemPort> {
-    /// Persistence handle.
     pub db: Db,
-    /// Handle to the Modem Manager.
     pub modem: M,
-    /// `Retry-After` seconds advertised on 503 responses.
     pub retry_after_secs: u64,
-    /// Per-identifier authentication failure tracker driving lockout (Req 3.8).
-    /// Shared behind a `Mutex`; the guarded critical sections are short and
-    /// synchronous, never held across an `.await`.
     pub auth_failures: Arc<Mutex<FailureTracker>>,
-    /// Per-key fixed-window rate limiter (Req 4.1–4.5). Shared behind a
-    /// `Mutex` for the same reason as `auth_failures`.
     pub rate_limiter: Arc<Mutex<RateLimiter>>,
-    /// Default per-key request limit applied when a key sets no custom limit.
     pub default_rate_limit: u32,
-    /// Rate-limit window length (Req 4.1, 4.5).
     pub rate_window: Duration,
 }
 
 impl<M: ModemPort> ApiState<M> {
-    /// Build API state with the default deliverability `Retry-After` interval
-    /// and the default rate-limit configuration.
     pub fn new(db: Db, modem: M) -> Self {
         ApiState {
             db,
@@ -140,7 +91,6 @@ impl<M: ModemPort> ApiState<M> {
         }
     }
 
-    /// Build API state with an explicit `Retry-After` interval (seconds).
     pub fn with_retry_after(db: Db, modem: M, retry_after_secs: u64) -> Self {
         ApiState {
             retry_after_secs,
@@ -148,7 +98,6 @@ impl<M: ModemPort> ApiState<M> {
         }
     }
 
-    /// Override the rate-limit configuration (default limit and window length).
     pub fn with_rate_config(mut self, default_rate_limit: u32, rate_window: Duration) -> Self {
         self.default_rate_limit = default_rate_limit;
         self.rate_window = rate_window;
@@ -160,34 +109,25 @@ impl<M: ModemPort> ApiState<M> {
 // Wire types
 // ---------------------------------------------------------------------------
 
-/// Body of a send request. Both fields are optional on the wire so an omitted
-/// field can be reported precisely (Req 1.6) rather than rejected as malformed.
+/// Send request body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SendRequest {
-    /// Recipient phone number (E.164).
     pub to: Option<String>,
-    /// Message body.
     pub body: Option<String>,
 }
 
-/// Acceptance response for a queued send (Req 1.1).
+/// Acceptance response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SendResponse {
-    /// Identifier of the persisted outbound message.
     pub id: i64,
-    /// Lifecycle status at acceptance time (always `queued`).
     pub status: MessageStatus,
-    /// Number of SMS parts the body was segmented into.
     pub parts: u8,
 }
 
-/// A client-facing error body. `fields` names the offending request fields,
-/// when applicable (Req 1.6, 1.7, 1.10).
+/// Client-facing error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApiError {
-    /// Human-readable error description.
     pub error: String,
-    /// Names of the request fields the error concerns (may be empty).
     pub fields: Vec<String>,
 }
 
@@ -200,28 +140,20 @@ impl ApiError {
     }
 }
 
-/// Health endpoint response (Req 9.1).
+/// Health endpoint response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HealthResponse {
-    /// Overall service health verdict.
     pub health: &'static str,
-    /// Whether the serial port is currently connected (Req 9.1, 9.4).
     pub serial_connected: bool,
-    /// SIM card status from `AT+CPIN?` (Req 9.1, 9.3).
     pub sim_status: &'static str,
 }
 
-/// Status endpoint response (Req 9.2). Each field is `null` and named in
-/// `unavailable` when the corresponding modem command did not respond (Req 9.7).
+/// Status endpoint response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusResponse {
-    /// Signal quality 0..=100 from `AT+CSQ`, or `null` when unavailable.
     pub signal_percent: Option<u8>,
-    /// Network registration from `AT+CREG?`, or `null` when unavailable.
     pub registered: Option<bool>,
-    /// Current operator from `AT+COPS?`, or `null` when unavailable.
     pub operator: Option<String>,
-    /// Names of the commands whose values are unavailable (Req 9.7).
     pub unavailable: Vec<String>,
 }
 
@@ -229,17 +161,8 @@ pub struct StatusResponse {
 // Router
 // ---------------------------------------------------------------------------
 
-/// Build the REST API router for the given state.
-///
-/// Protected message endpoints sit behind two layers, applied auth-first then
-/// rate-limit (Req 3.1–3.4, 4.2, 4.3): the API-key auth layer rejects absent,
-/// malformed, unknown, revoked, or locked-out keys with HTTP 401 and performs
-/// no business processing (Req 3.2, 3.3, 3.4, 3.7, 3.8), then the per-key
-/// rate-limit layer rejects over-limit requests with HTTP 429 and a
-/// `Retry-After` header (Req 4.2, 4.3). `/health` and `/status` are mounted
-/// without these layers so they remain unauthenticated (Req 9.1, 9.2).
+/// Build REST API router with protected (auth + rate-limit) and public endpoints.
 pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
-    // Protected endpoints: auth runs first (outermost), then rate limiting.
     let protected = Router::new()
         .route("/api/v1/messages", post(send_handler::<M>))
         .route("/api/v1/messages/inbound", get(inbound_handler::<M>))
@@ -257,7 +180,6 @@ pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
         )
         .with_state(state.clone());
 
-    // Unauthenticated operational endpoints.
     let public = Router::new()
         .route("/health", get(health_handler::<M>))
         .route("/status", get(status_handler::<M>))
@@ -266,26 +188,16 @@ pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
     protected.merge(public)
 }
 
-// ---------------------------------------------------------------------------
-// Authentication and rate-limit middleware (Req 3.1–3.4, 3.7, 3.8, 4.2–4.4)
-// ---------------------------------------------------------------------------
+// -- Middleware: auth & rate-limit
 
-/// Context produced by the auth layer for an authorized request and consumed
-/// by the rate-limit layer: the authorized key's optional custom rate limit
-/// and the non-reversible key identifier used for per-key accounting.
+/// Context from auth layer for rate-limit layer.
 #[derive(Debug, Clone)]
 struct AuthContext {
-    /// The key's custom rate limit, if any (Req 4.6, 4.7).
     custom_rate_limit: Option<u32>,
-    /// Non-reversible SHA-256 identifier, used as the rate-limiter key (Req 4.4).
     identifier: String,
 }
 
-/// A [`KeyStore`] over a single pre-resolved lookup result.
-///
-/// The async DB lookup is performed before [`authenticate`] is invoked (whose
-/// store interface is synchronous); this adapter feeds the already-resolved
-/// id back through the tested guard/lockout flow without a second lookup.
+/// KeyStore adapter for pre-resolved key lookups.
 struct ResolvedStore {
     id: Option<ApiKeyId>,
 }
@@ -296,11 +208,7 @@ impl KeyStore for ResolvedStore {
     }
 }
 
-/// Extract the presented API key from the request headers.
-///
-/// `X-API-Key` takes precedence; otherwise the bearer token of an
-/// `Authorization: Bearer <key>` header is used. Returns `None` when neither
-/// is present, which the auth flow treats as an absent key (Req 3.2).
+/// Extract API key from x-api-key header or Bearer token.
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get("x-api-key").and_then(|v| v.to_str().ok())
         && !value.is_empty()
@@ -320,11 +228,7 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-/// Look up an active, non-revoked API key by its non-reversible identifier,
-/// returning the key id and its optional custom rate limit (Req 3.1, 3.3, 3.4).
-///
-/// Revoked keys are excluded by the `revoked = 0` predicate, so they resolve to
-/// `None` exactly like unknown keys and are rejected with 401 (Req 3.4).
+/// Look up active, non-revoked key by identifier.
 async fn lookup_active_key(
     db: &Db,
     identifier: &str,
@@ -349,7 +253,7 @@ async fn lookup_active_key(
     }
 }
 
-/// Build a 401 Unauthorized response with no business processing (Req 3.2–3.4).
+/// Build 401 response.
 fn unauthorized_response() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -358,15 +262,7 @@ fn unauthorized_response() -> Response {
         .into_response()
 }
 
-/// API-key authentication layer (Req 3.1–3.4, 3.7, 3.8).
-///
-/// Extracts the presented key, rejects empty/over-length keys before any
-/// lookup (Req 3.7), rejects locked-out identifiers (Req 3.8), then resolves
-/// the active key and runs the tested [`authenticate`] flow. On success the
-/// resolved [`AuthContext`] is attached for the rate-limit layer and the
-/// request proceeds (Req 3.1); every rejection maps to HTTP 401 and the
-/// handler chain is never reached. Each attempt is audited with only the
-/// non-reversible key identifier — never the plaintext key (Req 3.6).
+/// API-key authentication middleware.
 async fn auth_middleware<M: ModemPort>(
     State(state): State<ApiState<M>>,
     mut request: Request,
@@ -376,7 +272,6 @@ async fn auth_middleware<M: ModemPort>(
     let timestamp = Utc::now();
     let presented = extract_api_key(request.headers()).unwrap_or_default();
 
-    // Pre-lookup guard: empty or over-length keys never reach the store (Req 3.7).
     if !passes_guard(&presented) {
         emit_auth_audit(
             &key_identifier(&presented),
@@ -386,14 +281,8 @@ async fn auth_middleware<M: ModemPort>(
         return unauthorized_response();
     }
 
-    // Derive the non-reversible identifier exactly once and reuse it for the
-    // lockout check, the store lookup, the authenticate core, and the audit
-    // record, rather than re-hashing the plaintext key on each step.
     let identifier = key_identifier(&presented);
 
-    // Lockout short-circuit so a locked-out identifier performs no lookup or
-    // business processing (Req 3.8). Checking before the DB lookup also avoids
-    // a query for keys that are already locked out.
     {
         let tracker = state
             .auth_failures
@@ -405,7 +294,6 @@ async fn auth_middleware<M: ModemPort>(
         }
     }
 
-    // Resolve the active, non-revoked key (Req 3.1, 3.3, 3.4).
     let resolved = match lookup_active_key(&state.db, &identifier).await {
         Ok(resolved) => resolved,
         Err(_) => {
@@ -417,8 +305,6 @@ async fn auth_middleware<M: ModemPort>(
         }
     };
 
-    // Run the tested guard/lockout/lookup flow against the resolved result,
-    // recording success or failure in the shared tracker.
     let store = ResolvedStore {
         id: resolved.map(|(id, _)| id),
     };
@@ -445,8 +331,7 @@ async fn auth_middleware<M: ModemPort>(
     }
 }
 
-/// Emit a structured audit/log record for an auth attempt, carrying only the
-/// non-reversible key identifier (never the plaintext key) (Req 3.6, 7.6).
+/// Emit structured audit record (never logs plaintext key).
 fn emit_auth_audit(identifier: &str, outcome: &AuthOutcome, timestamp: chrono::DateTime<Utc>) {
     let record = build_audit_record_with_identifier(identifier.to_string(), outcome, timestamp);
     tracing::info!(
@@ -457,14 +342,7 @@ fn emit_auth_audit(identifier: &str, outcome: &AuthOutcome, timestamp: chrono::D
     );
 }
 
-/// Per-key rate-limit layer (Req 4.1–4.4).
-///
-/// Runs after the auth layer, keyed by the authorized key's non-reversible
-/// identifier so each key is throttled independently (Req 4.4). Requests under
-/// the effective limit proceed; requests at or over the limit are rejected with
-/// HTTP 429 and a `Retry-After` header, leaving the count unchanged (Req 4.2,
-/// 4.3). The effective limit honors a valid custom override, falling back to
-/// the default otherwise (Req 4.6, 4.7).
+/// Per-key rate-limit middleware.
 async fn rate_limit_middleware<M: ModemPort>(
     State(state): State<ApiState<M>>,
     Extension(ctx): Extension<AuthContext>,
@@ -492,35 +370,16 @@ async fn rate_limit_middleware<M: ModemPort>(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Send handler (Req 1.1, 1.4, 1.5, 10.4)
-// ---------------------------------------------------------------------------
+// -- Send handler
 
-/// The outcome of preparing and queuing a send, mapped to HTTP by
-/// [`IntoResponse`].
+/// Outcome of preparing and queuing a send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SendDecision {
-    /// The send was accepted and queued (Req 1.1).
     Accepted(SendResponse),
-    /// The request failed validation (Req 1.6, 1.7, 1.10).
     Invalid(ValidationError),
-    /// The body requires more SMS parts than allowed (Req 1.8).
-    TooManyParts {
-        /// Parts the body would have required.
-        required: usize,
-    },
-    /// Delivery preconditions were unmet; reject with 503 + `Retry-After`
-    /// (Req 10.4).
-    Gated {
-        /// Seconds to advertise in `Retry-After`.
-        retry_after_secs: u64,
-    },
-    /// The database schema is not ready; reject with 503 (Req 6.5).
-    NotReady {
-        /// Seconds to advertise in `Retry-After`.
-        retry_after_secs: u64,
-    },
-    /// An unexpected persistence error occurred; respond 500 (Req 6.6).
+    TooManyParts { required: usize },
+    Gated { retry_after_secs: u64 },
+    NotReady { retry_after_secs: u64 },
     ServerError,
 }
 
@@ -562,7 +421,7 @@ impl IntoResponse for SendDecision {
     }
 }
 
-/// `POST /api/v1/messages` — validate, gate, persist `queued`, and dispatch.
+/// POST /api/v1/messages
 async fn send_handler<M: ModemPort>(
     State(state): State<ApiState<M>>,
     body: Result<Json<SendRequest>, JsonRejection>,
@@ -580,12 +439,8 @@ async fn send_handler<M: ModemPort>(
     queue_send(&state, &request).await.into_response()
 }
 
-/// Validate the request, run the deliverability gate, persist a `queued`
-/// outbound record, and dispatch the send to the Modem Manager on a background
-/// task. Returns the [`SendDecision`] describing the synchronous outcome.
+/// Validate, gate, persist queued message, dispatch to modem.
 async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> SendDecision {
-    // 1. Required-field presence (Req 1.6). Bind both fields directly; the
-    //    `else` arm reuses the canonical missing-field error.
     let (Some(to), Some(body)) = (request.to.as_deref(), request.body.as_deref()) else {
         let err = check_required_fields(request.to.as_deref(), request.body.as_deref())
             .err()
@@ -593,7 +448,6 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
         return SendDecision::Invalid(err);
     };
 
-    // 2. Phone number (Req 1.7) and body length (Req 1.1, 1.10) validation.
     if let Err(err) = validate_e164(to) {
         return SendDecision::Invalid(err);
     }
@@ -601,7 +455,6 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
         return SendDecision::Invalid(err);
     }
 
-    // 3. Segment to determine the part count (Req 1.8).
     let parts = match segment_message(body) {
         Ok(segments) => segments.len() as u8,
         Err(SegmentError::TooManyParts { required }) => {
@@ -609,8 +462,6 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
         }
     };
 
-    // 4. Deliverability gate (Req 10.4): reject with 503 + Retry-After when a
-    //    precondition for immediate delivery is unmet.
     let snapshot = state.modem.status_snapshot();
     if let DeliverabilityOutcome::Rejected { retry_after_secs } =
         deliverability_gate(&snapshot, state.retry_after_secs)
@@ -618,7 +469,6 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
         return SendDecision::Gated { retry_after_secs };
     }
 
-    // 5. Persist the queued record (Req 1.1).
     let record = match state
         .db
         .create_outbound_message(to, body, MessageStatus::Queued, parts)
@@ -633,9 +483,6 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
         Err(_) => return SendDecision::ServerError,
     };
 
-    // 6. Dispatch transmission in the background so acceptance returns promptly
-    //    (Req 1.1). The background task updates the record from the modem's
-    //    result (Req 1.4, 1.5) or leaves it queued to retry (Req 10.5).
     let id = record.id;
     let db = state.db.clone();
     let modem = state.modem.clone();
@@ -652,10 +499,7 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
     })
 }
 
-/// Dispatch a send to the Modem Manager and reconcile the outbound record with
-/// the result: `sent` with the returned reference (Req 1.4), `failed` with the
-/// returned error code/detail (Req 1.5), or left `queued` for a later retry
-/// when the modem was not registered (Req 10.5).
+/// Dispatch send, reconcile result (sent/failed/queued).
 async fn dispatch_send<M: ModemPort>(db: &Db, modem: &M, id: i64, to: String, body: String) {
     let result = modem.send(to, body).await;
     match result.status {
@@ -666,8 +510,6 @@ async fn dispatch_send<M: ModemPort>(db: &Db, modem: &M, id: i64, to: String, bo
                 .await;
         }
         MessageStatus::Failed => {
-            // Prefer the structured modem error code, falling back to the
-            // human-readable detail (timeout, manager unavailable, ...).
             let detail = result
                 .error_code
                 .map(|code| code.to_string())
@@ -676,18 +518,13 @@ async fn dispatch_send<M: ModemPort>(db: &Db, modem: &M, id: i64, to: String, bo
                 .update_outbound_message(id, MessageStatus::Failed, None, detail.as_deref())
                 .await;
         }
-        // Preconditions unmet at send time: retain as queued (Req 10.5).
         MessageStatus::Queued => {}
     }
 }
 
-// ---------------------------------------------------------------------------
-// Inbound listing (Req 2.4) and single outbound status (Req 1.4, 1.5)
-// ---------------------------------------------------------------------------
+// -- Inbound & outbound status
 
-/// `GET /api/v1/messages/inbound` — list persisted inbound messages ordered by
-/// receipt timestamp descending, returning an empty array when none exist
-/// (Req 2.4).
+/// GET /api/v1/messages/inbound
 async fn inbound_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
     match state.db.list_inbound_messages().await {
         Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
@@ -695,8 +532,7 @@ async fn inbound_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Resp
     }
 }
 
-/// `GET /api/v1/messages/{id}` — fetch a single outbound message status
-/// (Req 1.4, 1.5), or 404 when no such message exists.
+/// GET /api/v1/messages/{id}
 async fn outbound_status_handler<M: ModemPort>(
     State(state): State<ApiState<M>>,
     Path(id): Path<i64>,
@@ -712,27 +548,22 @@ async fn outbound_status_handler<M: ModemPort>(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Health (Req 9.1) and status (Req 9.2, 9.7) handlers
-// ---------------------------------------------------------------------------
+// -- Health & status
 
-/// `GET /health` — report the serial connection state and SIM status, plus the
-/// overall health verdict (Req 9.1, 9.3, 9.4, 9.6). Responds 503 when the
-/// derived health is unhealthy, otherwise 200.
+/// GET /health
 async fn health_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
     let snapshot = state.modem.status_snapshot();
     let (status, body) = build_health_response(&snapshot);
     (status, Json(body)).into_response()
 }
 
-/// `GET /status` — report signal quality, registration, and operator, marking
-/// each value unavailable when its modem command did not respond (Req 9.2, 9.7).
+/// GET /status
 async fn status_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
     let snapshot = state.modem.status_snapshot();
     (StatusCode::OK, Json(build_status_response(&snapshot))).into_response()
 }
 
-/// Build the health response and its HTTP status from a snapshot (Req 9.1).
+/// Build health response from snapshot.
 fn build_health_response(snapshot: &ModemStatusSnapshot) -> (StatusCode, HealthResponse) {
     let health = derive_health(snapshot);
     let status = match health {
@@ -747,14 +578,10 @@ fn build_health_response(snapshot: &ModemStatusSnapshot) -> (StatusCode, HealthR
     (status, body)
 }
 
-/// Build the status response from a snapshot, reporting per-command
-/// unavailability (Req 9.7).
+/// Build status response, marking unavailable commands.
 ///
-/// Signal quality and operator come straight from the snapshot's optional
-/// fields (a `None` means the corresponding `AT+CSQ` / `AT+COPS?` did not
-/// yield a value). Registration is reported only when the modem is responsive;
-/// an unresponsive modem could not have answered `AT+CREG?`, so its value is
-/// surfaced as unavailable.
+/// Registration unavailable when modem unresponsive; signal/operator from
+/// snapshot optionals.
 fn build_status_response(snapshot: &ModemStatusSnapshot) -> StatusResponse {
     let mut unavailable = Vec::new();
 
@@ -785,11 +612,8 @@ fn build_status_response(snapshot: &ModemStatusSnapshot) -> StatusResponse {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// -- Response helpers
 
-/// The canonical lowercase name for a [`ServiceHealth`] verdict.
 fn health_str(health: ServiceHealth) -> &'static str {
     match health {
         ServiceHealth::Healthy => "healthy",
@@ -798,7 +622,6 @@ fn health_str(health: ServiceHealth) -> &'static str {
     }
 }
 
-/// The canonical lowercase name for a [`SimStatus`].
 fn sim_str(sim: SimStatus) -> &'static str {
     match sim {
         SimStatus::Ready => "ready",
@@ -807,7 +630,6 @@ fn sim_str(sim: SimStatus) -> &'static str {
     }
 }
 
-/// Map a [`ValidationError`] to its HTTP status and client error body.
 fn validation_response(err: &ValidationError) -> (StatusCode, ApiError) {
     let body = match err {
         ValidationError::MissingFields(fields) => {
@@ -828,8 +650,6 @@ fn validation_response(err: &ValidationError) -> (StatusCode, ApiError) {
     (StatusCode::BAD_REQUEST, body)
 }
 
-/// Map a [`DbError`](crate::db::DbError) to a response: `NotReady` becomes 503
-/// with a `Retry-After` header (Req 6.5); any other error becomes 500 (Req 6.6).
 fn db_error_response(err: &crate::db::DbError, retry_after_secs: u64) -> Response {
     if err.is_not_ready() {
         json_with_retry_after(
@@ -846,8 +666,6 @@ fn db_error_response(err: &crate::db::DbError, retry_after_secs: u64) -> Respons
     }
 }
 
-/// Build a JSON response carrying a `Retry-After` header with an integer number
-/// of seconds (Req 4.3, 10.4).
 fn json_with_retry_after(status: StatusCode, retry_after_secs: u64, body: ApiError) -> Response {
     let mut response = (status, Json(body)).into_response();
     if let Ok(value) = HeaderValue::from_str(&retry_after_secs.to_string()) {
@@ -860,8 +678,7 @@ fn json_with_retry_after(status: StatusCode, retry_after_secs: u64, body: ApiErr
 mod tests {
     use super::*;
 
-    /// A stub Modem Manager with a fixed status snapshot and a canned send
-    /// result, so handler logic can be exercised without real hardware.
+    /// Stub Modem Manager with fixed snapshot & canned result.
     #[derive(Clone)]
     struct StubModem {
         snapshot: ModemStatusSnapshot,
@@ -1030,7 +847,6 @@ mod tests {
 
     #[tokio::test]
     async fn send_not_ready_when_schema_closed() {
-        // Connect without running migrations: the schema-ready gate is closed.
         let db = Db::connect_in_memory().await.unwrap();
         let state = ApiState::with_retry_after(
             db,
@@ -1162,9 +978,8 @@ mod tests {
     // -- Middleware wiring tests (Req 3.1–3.4, 4.2, 4.3) --------------------
 
     use axum::body::Body;
-    use tower::util::ServiceExt; // for `oneshot`
+    use tower::util::ServiceExt;
 
-    /// Insert an active, non-revoked API key and return its row id.
     async fn insert_key(db: &Db, plaintext: &str, custom: Option<i64>) -> i64 {
         let ident = key_identifier(plaintext);
         let hash = format!("hash-{ident}");
@@ -1182,7 +997,7 @@ mod tests {
         result.last_insert_rowid()
     }
 
-    /// Mark a key as revoked.
+    /// Mark key as revoked.
     async fn revoke_key(db: &Db, id: i64) {
         sqlx::query("UPDATE api_keys SET revoked = 1 WHERE id = ?")
             .bind(id)
@@ -1313,7 +1128,6 @@ mod tests {
         let state = test_state(db).with_rate_config(1, Duration::from_secs(60));
         let app = router(state);
 
-        // Exhaust key-a's single-request budget.
         let a1 = app
             .clone()
             .oneshot(get_request("/api/v1/messages/inbound", Some("key-a")))
@@ -1327,7 +1141,6 @@ mod tests {
             .unwrap();
         assert_eq!(a2.status(), StatusCode::TOO_MANY_REQUESTS);
 
-        // key-b is unaffected by key-a's activity (Req 4.4).
         let b1 = app
             .oneshot(get_request("/api/v1/messages/inbound", Some("key-b")))
             .await

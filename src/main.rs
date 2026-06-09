@@ -7,8 +7,6 @@
 //! and the process exits non-zero. Any other startup or shutdown failure also
 //! exits non-zero (Req 11.3).
 
-// Same panic-hardening denies as the library crate (see `lib.rs`); the binary
-// must not panic at runtime.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -38,8 +36,6 @@ fn main() -> ExitCode {
     match runtime.block_on(run()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            // Name the offending configuration key explicitly on stderr so the
-            // operator sees it even outside the structured log (Req 11.5).
             if let RunError::Config(_) = &error
                 && let Some(key) = error.config_key()
             {

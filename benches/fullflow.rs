@@ -89,14 +89,19 @@ fn temp_db_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("sms_fullflow_{}_{nanos}_{n}.sqlite", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "sms_fullflow_{}_{nanos}_{n}.sqlite",
+        std::process::id()
+    ))
 }
 
 /// Connect to a fresh temp-file database and run migrations.
 async fn ready_db() -> Db {
     let base = temp_db_path();
     let path = base.to_str().expect("temp path is valid UTF-8");
-    Db::initialize(path).await.expect("initialize temp database")
+    Db::initialize(path)
+        .await
+        .expect("initialize temp database")
 }
 
 /// Insert an active, non-revoked API key keyed by the identifier of `plaintext`.
@@ -196,10 +201,10 @@ fn bench_inbound_list_flow(c: &mut Criterion) {
     c.bench_function("full_flow_inbound_list", |b| {
         b.iter(|| {
             let resp = rt
-                .block_on(
-                    app.clone()
-                        .oneshot(black_box(get_request("/api/v1/messages/inbound", Some(API_KEY)))),
-                )
+                .block_on(app.clone().oneshot(black_box(get_request(
+                    "/api/v1/messages/inbound",
+                    Some(API_KEY),
+                ))))
                 .expect("router responds");
             black_box(resp.status())
         })

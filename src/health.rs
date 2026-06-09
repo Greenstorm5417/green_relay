@@ -140,8 +140,7 @@ pub fn deliverability_gate(
 mod tests {
     use super::*;
 
-    /// A fully healthy/deliverable baseline snapshot that individual tests
-    /// mutate to exercise one failing condition at a time.
+    /// Baseline healthy snapshot for test mutations.
     fn healthy_snapshot() -> ModemStatusSnapshot {
         ModemStatusSnapshot {
             serial_connected: true,
@@ -190,7 +189,6 @@ mod tests {
 
     #[test]
     fn unhealthy_takes_priority_over_degraded() {
-        // Not registered (would be Degraded) but also serial down => Unhealthy.
         let mut s = healthy_snapshot();
         s.registered = false;
         s.serial_connected = false;
@@ -243,8 +241,6 @@ mod tests {
 
     #[test]
     fn gate_ignores_responsiveness() {
-        // An unresponsive-but-otherwise-deliverable snapshot is still
-        // deliverable: responsiveness is not one of the gate's preconditions.
         let mut s = healthy_snapshot();
         s.responsive = false;
         assert_eq!(

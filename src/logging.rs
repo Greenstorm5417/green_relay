@@ -143,15 +143,10 @@ impl LogRecord {
 
     /// Current UTC timestamp formatted with both date and time-of-day.
     pub fn now_timestamp() -> String {
-        // RFC 3339 with milliseconds and a `Z` zone, e.g.
-        // "2024-01-15T12:34:56.789Z". Contains the calendar date and the
-        // time-of-day required by Req 7.1.
         Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
     }
 
-    /// Attach an arbitrary structured field. Reserved keys (`timestamp`,
-    /// `severity`, `message`) are ignored so the core fields cannot be
-    /// clobbered.
+    /// Attach an arbitrary structured field. Reserved keys are ignored.
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         let key = key.into();
         if !RESERVED_KEYS.contains(&key.as_str()) {
@@ -180,15 +175,12 @@ impl LogRecord {
         self.fields.get(key)
     }
 
-    /// Whether this record should be emitted given a configured minimum
-    /// severity: a record is emitted iff its severity is greater than or equal
-    /// to the minimum (Req 7.4, 7.5).
+    /// Whether this record should be emitted given a minimum severity.
     pub fn should_emit(&self, min_severity: Severity) -> bool {
         self.severity >= min_severity
     }
 
-    /// Render the record to a JSON object value. The object always contains the
-    /// `timestamp`, `severity`, and `message` keys plus any attached fields.
+    /// Render the record to a JSON object value.
     pub fn to_json_value(&self) -> Value {
         let mut map = Map::new();
         map.insert(
@@ -230,19 +222,14 @@ pub fn at_exchange_log(command: &str, result_code: &str) -> LogRecord {
         .with_field("result", result_code.to_string())
 }
 
-/// Build an authentication-event log record. Only the non-reversible key
-/// identifier and the outcome are recorded; no plaintext credential is ever
-/// attached (Req 7.6). Any additional fields supplied are passed through
-/// [`redact_credentials`] so credential-named fields are masked (Req 7.7).
+/// Build an authentication-event log record.
 pub fn auth_event_log(key_identifier: &str, outcome: &str) -> LogRecord {
     LogRecord::new(Severity::Info, "auth_event")
         .with_field("key_identifier", key_identifier.to_string())
         .with_field("outcome", outcome.to_string())
 }
 
-/// Redact credential-named fields from a field map in place. Every field whose
-/// (case-insensitive) name is a known credential field has its value replaced
-/// with [`REDACTED`]; all other fields are left untouched (Req 7.7).
+/// Redact credential-named fields from a field map in place.
 pub fn redact_credentials(fields: &mut BTreeMap<String, Value>) {
     for (key, value) in fields.iter_mut() {
         if is_credential_field(key) {
@@ -269,11 +256,9 @@ impl std::fmt::Display for SubscriberInitError {
 
 impl std::error::Error for SubscriberInitError {}
 
-/// Initialize the global `tracing` JSON subscriber writing to stdout, filtering
-/// out any record below `min_severity` (Req 7.4, 7.5, 11.6).
+/// Initialize the global `tracing` JSON subscriber writing to stdout.
 ///
-/// Uses `try_init` so that repeated initialization (e.g. across tests) returns
-/// an error rather than panicking.
+/// Uses `try_init` so repeated initialization returns an error rather than panicking.
 pub fn init_subscriber(min_severity: Severity) -> Result<(), SubscriberInitError> {
     let max_level: tracing::Level = min_severity.into();
     tracing_subscriber::fmt()

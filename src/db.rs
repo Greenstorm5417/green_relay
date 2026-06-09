@@ -1,55 +1,24 @@
-//! Persistence layer: SQLite pool, schema, migrations, and queries.
-//!
-//! This module owns the `sqlx` SQLite connection pool and the database
-//! lifecycle described in `design.md` §9 (Persistence):
-//!
-//! - On startup the schema is created if absent, otherwise all pending
-//!   migrations are applied in ascending version order, *before* the service
-//!   transitions to the request-accepting state (Req 6.2, 6.3). A unified
-//!   versioned-migration table drives both cases: the very first migration
-//!   creates the full five-table schema, and later migrations are applied
-//!   only when their version exceeds the highest already-recorded version.
-//! - A "schema ready" gate ([`Db::is_schema_ready`]) flips to `true` only
-//!   after migrations succeed. Message-record writes attempted before the gate
-//!   opens are rejected with [`DbError::NotReady`], which the API layer maps to
-//!   HTTP 503 (Req 6.5).
-//! - Message-record create/update operations run inside a transaction and roll
-//!   back on any failure so no partial change is persisted (Req 6.6). A
-//!   committed write is durable before the affected request returns success
-//!   (Req 6.4).
-//! - If schema creation or migration fails at startup the gate stays closed and
-//!   the error is surfaced to the caller, which refuses to start serving
-//!   (Req 6.7).
-//!
-//! Timestamps are stored as RFC 3339 / ISO 8601 text in UTC so they round-trip
-//! losslessly through SQLite's text affinity.
+//! SQLite persistence layer: pool, schema, migrations, and queries.
+//! Migrations are applied on startup before the service accepts requests.
+//! Writes are transactional with rollback on failure.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Acquire, Row, SqlitePool};
 
 use crate::models::{InboundMessage, MessageStatus, OutboundMessage};
 
-/// An ordered, versioned schema migration.
-///
-/// `version` must be unique and strictly increasing across the [`MIGRATIONS`]
-/// slice; `sql` may contain multiple statements separated by `;`.
+/// Ordered, versioned schema migration.
 struct Migration {
     version: i64,
     sql: &'static str,
 }
 
-/// Migration v1: create the full schema for all five record types (Req 6.1).
-///
-/// Tables: outbound messages, inbound messages, API keys, admin users, and the
-/// audit log. Kept as a single migration because, for a brand-new database,
-/// "create the schema if absent" (Req 6.2) is exactly "apply migration 1".
+/// Migration v1: create full schema for all five record types.
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS outbound_messages (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,33 +69,25 @@ CREATE INDEX IF NOT EXISTS idx_inbound_received_at
     ON inbound_messages (received_at DESC);
 "#;
 
-/// The full ordered list of migrations. Append new migrations with strictly
-/// increasing version numbers; never edit or reorder an already-released one.
+/// All migrations in ascending version order.
 const MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
     sql: SCHEMA_V1,
 }];
 
 /// Errors produced by the persistence layer.
-///
-/// The variants carry enough information for the API layer to choose the right
-/// HTTP status: [`DbError::NotReady`] maps to 503 (Req 6.5) while every other
-/// variant maps to 500 (Req 6.6).
 #[derive(Debug)]
 pub enum DbError {
-    /// A message-record write was attempted before the schema-ready gate
-    /// opened. No record was modified (Req 6.5).
+    /// Schema gate not yet open.
     NotReady,
-    /// A schema migration failed; the version that failed is included so the
-    /// startup path can log the specific offending migration (Req 6.7).
+    /// Schema migration failed.
     Migration { version: i64, source: sqlx::Error },
-    /// Any other database error (connection, query, transaction) (Req 6.6).
+    /// Database query or connection error.
     Sqlx(sqlx::Error),
 }
 
 impl DbError {
-    /// Whether this error is the "schema not ready" condition (HTTP 503).
-    /// All other variants represent server-side failures (HTTP 500).
+    /// Whether this is the "not ready" condition (HTTP 503).
     pub fn is_not_ready(&self) -> bool {
         matches!(self, DbError::NotReady)
     }
@@ -160,10 +121,7 @@ impl From<sqlx::Error> for DbError {
     }
 }
 
-/// The persistence handle shared across the service.
-///
-/// Cloning is cheap: the connection pool and the readiness flag are both
-/// reference-counted, so all clones observe the same pool and the same gate.
+/// Persistence handle shared across the service.
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
@@ -171,17 +129,8 @@ pub struct Db {
 }
 
 impl Db {
-    /// Connect to the SQLite database at `database_path`, creating the file if
-    /// it does not yet exist. The schema-ready gate starts closed; call
-    /// [`Db::run_migrations`] before serving requests.
+    /// Connect to SQLite database, creating if missing.
     pub async fn connect(database_path: &str) -> Result<Db, DbError> {
-        // WAL journaling makes commits sequential appends to a single WAL file
-        // rather than create/fsync/delete of a per-transaction rollback
-        // journal, which is the dominant cost on the write path (queued-send
-        // insert, status updates). `synchronous = FULL` is retained so a
-        // committed write survives OS/power loss before the request returns
-        // (Req 6.4); `busy_timeout` lets a brief writer contention retry
-        // instead of failing with "database is locked".
         let options = SqliteConnectOptions::new()
             .filename(database_path)
             .create_if_missing(true)
@@ -196,8 +145,7 @@ impl Db {
         })
     }
 
-    /// Connect to a private in-memory database, used by tests. A single pinned
-    /// connection keeps the in-memory schema alive for the pool's lifetime.
+    /// Connect to private in-memory database for tests.
     #[cfg(test)]
     pub async fn connect_in_memory() -> Result<Db, DbError> {
         let options = SqliteConnectOptions::new()
@@ -216,37 +164,27 @@ impl Db {
         })
     }
 
-    /// Connect and run migrations in one step, returning a ready handle.
+    /// Connect and run migrations in one step.
     pub async fn initialize(database_path: &str) -> Result<Db, DbError> {
         let db = Db::connect(database_path).await?;
         db.run_migrations().await?;
         Ok(db)
     }
 
-    /// Borrow the underlying pool for read queries implemented in other tasks
-    /// (e.g. inbound listing in task 4.4) and integration tests.
+    /// Borrow the underlying connection pool.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 
-    /// Whether the schema-ready gate is open (Req 6.5).
+    /// Whether the schema-ready gate is open.
     pub fn is_schema_ready(&self) -> bool {
         self.schema_ready.load(Ordering::SeqCst)
     }
 
-    /// Create the schema if absent, otherwise apply every pending migration in
-    /// ascending version order, then open the schema-ready gate (Req 6.2, 6.3).
-    ///
-    /// Each migration runs in its own transaction together with the insert that
-    /// records its version, so a failed migration leaves neither a partial
-    /// schema change nor a recorded version behind. On any failure the gate
-    /// stays closed and the error is returned so startup can refuse to serve
-    /// (Req 6.7).
+    /// Create schema if absent, otherwise apply pending migrations.
     pub async fn run_migrations(&self) -> Result<(), DbError> {
         let mut conn = self.pool.acquire().await?;
 
-        // The migration ledger itself is created idempotently; its presence or
-        // absence is how we distinguish a fresh database from an existing one.
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migrations (\
                  version INTEGER PRIMARY KEY, \
@@ -299,7 +237,7 @@ impl Db {
         Ok(())
     }
 
-    /// The schema-ready gate guard for message-record writes (Req 6.5).
+    /// Schema-ready gate guard for message-record writes.
     fn ensure_ready(&self) -> Result<(), DbError> {
         if self.is_schema_ready() {
             Ok(())
@@ -308,12 +246,7 @@ impl Db {
         }
     }
 
-    /// Create a new outbound message record transactionally and return the
-    /// persisted row (with its assigned id and timestamps) (Req 6.4).
-    ///
-    /// The whole insert runs in a transaction; any failure rolls it back so no
-    /// partial record is persisted (Req 6.6). Rejected with [`DbError::NotReady`]
-    /// if the schema gate is still closed (Req 6.5).
+    /// Create a new outbound message record transactionally.
     pub async fn create_outbound_message(
         &self,
         to_number: &str,
@@ -345,8 +278,6 @@ impl Db {
         let id = match insert {
             Ok(result) => result.last_insert_rowid(),
             Err(e) => {
-                // Roll back explicitly; ignore a secondary rollback error since
-                // the original failure is what matters for the caller.
                 let _ = tx.rollback().await;
                 return Err(DbError::Sqlx(e));
             }
@@ -367,11 +298,7 @@ impl Db {
         })
     }
 
-    /// Update the status (and optional reference / error code) of an existing
-    /// outbound message transactionally, returning the updated row (Req 6.4).
-    ///
-    /// `updated_at` is advanced to the current UTC time. The update and its
-    /// read-back run in one transaction with rollback on failure (Req 6.6).
+    /// Update outbound message status, reference, and error code transactionally.
     pub async fn update_outbound_message(
         &self,
         id: i64,
@@ -430,7 +357,7 @@ impl Db {
         Ok(message)
     }
 
-    /// Fetch a single outbound message by id, or `None` if it does not exist.
+    /// Fetch a single outbound message by id.
     pub async fn get_outbound_message(&self, id: i64) -> Result<Option<OutboundMessage>, DbError> {
         let row = sqlx::query(
             "SELECT id, to_number, body, status, part_count, msg_reference, error_code, created_at, updated_at \
@@ -446,8 +373,7 @@ impl Db {
         }
     }
 
-    /// Create a new inbound message record transactionally and return the
-    /// persisted row with its assigned id (Req 6.4, 6.6).
+    /// Create a new inbound message record transactionally.
     pub async fn create_inbound_message(
         &self,
         from_number: &str,
@@ -487,7 +413,7 @@ impl Db {
         })
     }
 
-    /// Fetch a single inbound message by id, or `None` if it does not exist.
+    /// Fetch a single inbound message by id.
     pub async fn get_inbound_message(&self, id: i64) -> Result<Option<InboundMessage>, DbError> {
         let row = sqlx::query(
             "SELECT id, from_number, body, received_at FROM inbound_messages WHERE id = ?",
@@ -502,16 +428,7 @@ impl Db {
         }
     }
 
-    /// List all persisted inbound messages ordered by receipt timestamp
-    /// descending (most recent first) (Req 2.4).
-    ///
-    /// Returns every persisted [`InboundMessage`] exactly once — the result is
-    /// a lossless reordering of the stored rows — and an empty vector when no
-    /// inbound records exist. Ties on `received_at` are broken by `id`
-    /// descending so the ordering is deterministic for records sharing a
-    /// timestamp. Ordering is performed in SQL (backed by the
-    /// `idx_inbound_received_at` index) rather than in Rust so it stays correct
-    /// regardless of insertion order.
+    /// List all inbound messages ordered by receipt timestamp descending.
     pub async fn list_inbound_messages(&self) -> Result<Vec<InboundMessage>, DbError> {
         let rows = sqlx::query(
             "SELECT id, from_number, body, received_at \
@@ -525,17 +442,7 @@ impl Db {
     }
 }
 
-/// Pure decision: should a storage-capacity warning be recorded for the modem
-/// storage reported by `AT+CPMS?` (Req 2.6)?
-///
-/// Returns `true` if and only if `used` is at least 90% of `total`, i.e. when
-/// `used / total >= 0.90`. The comparison is performed with integer arithmetic
-/// (`used * 10 >= total * 9`, widened to `u64` to avoid overflow) so it is
-/// exact and free of floating-point rounding error.
-///
-/// When `total` is zero there is no capacity to be near, so this returns
-/// `false`; callers should treat a zero-capacity report as "no warning". The
-/// associated property (Property 10) is quantified over `total > 0`.
+/// Storage capacity warning decision: true if used >= 90% of total.
 pub fn storage_capacity_warn(used: u32, total: u32) -> bool {
     if total == 0 {
         return false;
@@ -543,15 +450,14 @@ pub fn storage_capacity_warn(used: u32, total: u32) -> bool {
     u64::from(used) * 10 >= u64::from(total) * 9
 }
 
-/// Parse a stored RFC 3339 timestamp back into a UTC `DateTime`, mapping a
-/// malformed value to a decode error.
+/// Parse RFC 3339 timestamp back into UTC DateTime.
 fn parse_ts(text: &str) -> Result<DateTime<Utc>, DbError> {
     DateTime::parse_from_rfc3339(text)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| DbError::Sqlx(sqlx::Error::Decode(Box::new(e))))
 }
 
-/// Map a row from `outbound_messages` into an [`OutboundMessage`].
+/// Map a row from outbound_messages into OutboundMessage.
 fn outbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<OutboundMessage, DbError> {
     let status_text: String = row.try_get("status")?;
     let status = MessageStatus::from_db_str(&status_text).ok_or_else(|| {
@@ -576,7 +482,7 @@ fn outbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<OutboundMessage, D
     })
 }
 
-/// Map a row from `inbound_messages` into an [`InboundMessage`].
+/// Map a row from inbound_messages into InboundMessage.
 fn inbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<InboundMessage, DbError> {
     let received_at: String = row.try_get("received_at")?;
     Ok(InboundMessage {
@@ -591,7 +497,7 @@ fn inbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<InboundMessage, DbE
 mod tests {
     use super::*;
 
-    /// All five record tables exist after migrations run (Req 6.1, 6.2).
+    /// All five tables exist after migrations.
     #[tokio::test]
     async fn migrations_create_all_five_tables() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -615,7 +521,7 @@ mod tests {
         }
     }
 
-    /// The schema-ready gate is closed before migrations and open after (Req 6.5).
+    /// Schema-ready gate opens after migrations.
     #[tokio::test]
     async fn schema_ready_gate_opens_after_migrations() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -624,13 +530,10 @@ mod tests {
         assert!(db.is_schema_ready());
     }
 
-    /// Writes attempted before the gate opens are rejected as NotReady with no
-    /// record created (Req 6.5).
+    /// Writes before gate opens are rejected.
     #[tokio::test]
     async fn writes_before_ready_are_rejected() {
         let db = Db::connect_in_memory().await.unwrap();
-        // No migrations have run, so the gate is closed and the write guard
-        // must fire before any SQL is issued.
         let err = db
             .create_outbound_message("+14155552671", "hi", MessageStatus::Queued, 1)
             .await
@@ -638,8 +541,7 @@ mod tests {
         assert!(err.is_not_ready());
     }
 
-    /// A created outbound record can be read back equal to what was returned
-    /// (Req 6.4). The full property-based round-trip lives in task 4.3.
+    /// Created outbound record can be read back equal.
     #[tokio::test]
     async fn outbound_create_and_read_back() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -656,8 +558,7 @@ mod tests {
         assert_eq!(created, fetched);
     }
 
-    /// Updating an outbound record advances status and stores the reference,
-    /// and the read-back reflects it (Req 6.4).
+    /// Update outbound persists status and reference.
     #[tokio::test]
     async fn outbound_update_persists_status_and_reference() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -730,8 +631,6 @@ mod tests {
 
         let t = |secs: u32| Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, secs).unwrap();
 
-        // Insert out of timestamp order to prove ordering is by received_at,
-        // not by insertion / id order.
         db.create_inbound_message("+1000", "middle", t(20))
             .await
             .unwrap();

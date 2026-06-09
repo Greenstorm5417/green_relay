@@ -1,22 +1,4 @@
-//! Admin dashboard: auth primitives, session logic, and selection helpers.
-//!
-//! This file implements the pure / self-contained primitives the admin
-//! dashboard is built on (task 11.1):
-//!
-//! - [`hash_password`] / [`verify_password`] — Argon2 password hashing and
-//!   verification (Req 5.2, 5.3).
-//! - [`session_valid`] — an administrative session is valid while it has been
-//!   active within the last 30 minutes (Req 5.8, 5.9).
-//! - [`admin_locked`] — the admin login lockout predicate: 5 failed logins
-//!   within any trailing 15-minute window lock the account for 15 minutes
-//!   (Req 5.5).
-//! - [`recent_activity`] — the dashboard's recent-activity selection: at most
-//!   10 entries from the preceding 24 hours, most-recent-first (Req 5.7).
-//!
-//! The Axum handlers, views, and cookie session middleware that consume these
-//! primitives are implemented separately (task 11.6).
-//!
-//! Validates: Requirements 5.2, 5.3, 5.5, 5.7, 5.8, 5.9
+//! Admin dashboard: password hashing, sessions, lockout, activity filtering.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -44,35 +26,14 @@ use crate::auth::key_identifier;
 use crate::db::{Db, DbError};
 use crate::health::{ModemStatusSnapshot, ServiceHealth, derive_health};
 
-// ---------------------------------------------------------------------------
-// Password hashing (task 11.1, Requirements 5.2, 5.3)
-// ---------------------------------------------------------------------------
-
-/// Hash a plaintext password using Argon2 with a freshly generated random salt.
-///
-/// The returned string is the standard PHC-format encoding of the Argon2 hash
-/// (algorithm, parameters, salt, and digest), suitable for storing in the
-/// `password_hash` column of the `ADMIN_USERS` table. Because a random salt is
-/// used, hashing the same password twice produces different strings; the hash
-/// is never equal to the plaintext password (Req 5.2).
 pub fn hash_password(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
-        // Hashing only fails for invalid parameters; `Argon2::default()` and a
-        // generated salt are always valid, so the fallback is unreachable. An
-        // empty hash here would simply fail every later verification (closed),
-        // so this stays panic-free without weakening security.
         .unwrap_or_default()
 }
 
-/// Verify a plaintext `password` against a stored Argon2 `stored_hash`.
-///
-/// Returns `true` only when `stored_hash` is a well-formed Argon2 hash and the
-/// supplied password matches it (Req 5.3). A malformed or unparseable stored
-/// hash yields `false` rather than an error, so a corrupt record can never be
-/// treated as a successful authentication.
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     let parsed = match PasswordHash::new(stored_hash) {
         Ok(hash) => hash,
@@ -83,71 +44,34 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
         .is_ok()
 }
 
-// ---------------------------------------------------------------------------
-// Session validity (task 11.1, Requirements 5.8, 5.9)
-// ---------------------------------------------------------------------------
-
-/// Maximum idle time before an administrative session expires (Req 5.9).
 pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// An authenticated administrative session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Session {
-    /// Identifier of the authenticated admin user.
     pub admin_id: i64,
-    /// Instant of the session's most recent activity.
     pub last_activity: Instant,
 }
 
-/// Determine whether an administrative session is still valid at `now`.
-///
-/// A session is valid if and only if the time elapsed since its last activity
-/// is strictly less than 30 minutes. At or beyond the 30-minute idle boundary
-/// the session has expired and re-authentication is required (Req 5.8, 5.9).
 pub fn session_valid(session: &Session, now: Instant) -> bool {
     now.saturating_duration_since(session.last_activity) < SESSION_IDLE_TIMEOUT
 }
 
-// ---------------------------------------------------------------------------
-// Admin login lockout (task 11.1, Requirement 5.5)
-// ---------------------------------------------------------------------------
-
-/// Number of failed logins within the failure window that triggers a lockout
-/// (Req 5.5).
+// Lockout: 5 failures in 15min window
 pub const ADMIN_MAX_FAILURES: usize = 5;
-
-/// Trailing window over which failed logins are counted toward a lockout
-/// (Req 5.5).
 pub const ADMIN_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
-
-/// Duration an account remains locked once a lockout is triggered (Req 5.5).
 pub const ADMIN_LOCK_DURATION: Duration = Duration::from_secs(15 * 60);
 
-/// Determine whether an admin account is locked at `now`, given the timeline
-/// of its failed-login instants.
-///
-/// The account is locked if and only if there exists a failure that was the
-/// 5th (or later) failure within a trailing 15-minute window — the trigger —
-/// such that `now` falls within the 15-minute lock window that begins at that
-/// trigger. The lock takes effect at the trigger instant and remains in effect
-/// for exactly 15 minutes, expiring at the boundary (Req 5.5).
-///
-/// `failures` need not be sorted; an empty timeline is never locked.
 pub fn admin_locked(failures: &[Instant], now: Instant) -> bool {
     let mut sorted: Vec<Instant> = failures.to_vec();
     sorted.sort_unstable();
 
     for (i, &trigger) in sorted.iter().enumerate() {
-        // Count failures within the trailing 15-minute window ending at this
-        // failure. Because `sorted` is ascending, every earlier entry is <=
-        // `trigger`, so the elapsed duration is well-defined and non-negative.
         let count = sorted
             .iter()
             .take(i.saturating_add(1))
             .filter(|&&f| trigger.saturating_duration_since(f) <= ADMIN_FAILURE_WINDOW)
             .count();
 
-        // A qualifying trigger locks the account for [trigger, trigger + 15m).
         if count >= ADMIN_MAX_FAILURES
             && now >= trigger
             && now.saturating_duration_since(trigger) < ADMIN_LOCK_DURATION
@@ -159,27 +83,15 @@ pub fn admin_locked(failures: &[Instant], now: Instant) -> bool {
     false
 }
 
-// ---------------------------------------------------------------------------
-// Recent-activity selection (task 11.1, Requirement 5.7)
-// ---------------------------------------------------------------------------
-
-/// Maximum number of recent-activity entries shown on the dashboard (Req 5.7).
+// Recent activity: 24h window, max 10 entries
 pub const RECENT_ACTIVITY_LIMIT: usize = 10;
 
-/// A single message-activity entry displayed on the admin dashboard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityEntry {
-    /// When the activity occurred, in UTC.
     pub timestamp: DateTime<Utc>,
-    /// A human-readable description of the activity.
     pub description: String,
 }
 
-/// Select the entries to display in the dashboard's recent-activity panel.
-///
-/// Returns at most 10 entries, each having a timestamp within the 24 hours
-/// preceding `now` (entries in the future or older than 24 hours are
-/// excluded), ordered most-recent-first (Req 5.7).
 pub fn recent_activity(entries: &[ActivityEntry], now: DateTime<Utc>) -> Vec<ActivityEntry> {
     let window = chrono::Duration::hours(24);
 
@@ -187,62 +99,31 @@ pub fn recent_activity(entries: &[ActivityEntry], now: DateTime<Utc>) -> Vec<Act
         .iter()
         .filter(|entry| {
             let age = now.signed_duration_since(entry.timestamp);
-            // Within the preceding 24 hours: not in the future and no older
-            // than the 24-hour window.
             age >= chrono::Duration::zero() && age <= window
         })
         .cloned()
         .collect();
 
-    // Most-recent-first.
     recent.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
     recent.truncate(RECENT_ACTIVITY_LIMIT);
     recent
 }
 
-// ===========================================================================
-// Admin handlers, session middleware, and views (task 11.6)
-//
-// Requirements 5.1, 5.4, 5.6, 5.7, 5.10. This section wires the pure
-// primitives above (password verification, session validity, the login
-// lockout predicate, and recent-activity selection) into Axum handlers with
-// cookie-based session tokens, backed by the SQLite persistence layer.
-//
-// The HTTP-independent core (login, authorization, key management, dashboard
-// assembly) is factored into plain async functions so it can be exercised
-// directly in tests without a full HTTP harness; the Axum handlers are thin
-// wrappers over that core.
-// ===========================================================================
-
-/// Name of the cookie carrying the opaque administrative session token.
+// Session management
 pub const SESSION_COOKIE: &str = "admin_session";
 
-// ---------------------------------------------------------------------------
-// Session store
-// ---------------------------------------------------------------------------
-
-/// In-memory store mapping opaque session tokens to their [`Session`].
-///
-/// Tokens are high-entropy random hex strings; the plaintext token lives only
-/// in the client's cookie and as a map key here. Validation refreshes the
-/// session's `last_activity` so an active admin keeps direct access (Req 5.8),
-/// and expires (removes) a session that has been idle for 30 minutes
-/// (Req 5.9).
 #[derive(Default)]
 pub struct SessionStore {
     sessions: HashMap<String, Session>,
 }
 
 impl SessionStore {
-    /// Create a new, empty store.
     pub fn new() -> Self {
         SessionStore {
             sessions: HashMap::new(),
         }
     }
 
-    /// Establish a new session for `admin_id` active as of `now`, returning the
-    /// freshly generated session token (Req 5.1).
     pub fn create(&mut self, admin_id: i64, now: Instant) -> String {
         let token = random_token();
         self.sessions.insert(
@@ -255,10 +136,6 @@ impl SessionStore {
         token
     }
 
-    /// Validate `token` at `now`. Returns the associated `admin_id` and
-    /// refreshes the session's activity when the session exists and is still
-    /// within the 30-minute idle window (Req 5.8); otherwise the session is
-    /// removed (if present) and `None` is returned (Req 5.9).
     pub fn validate(&mut self, token: &str, now: Instant) -> Option<i64> {
         match self.sessions.get_mut(token) {
             Some(session) if session_valid(session, now) => {
@@ -273,41 +150,30 @@ impl SessionStore {
         }
     }
 
-    /// Remove a session (e.g. on logout).
     pub fn remove(&mut self, token: &str) {
         self.sessions.remove(token);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Admin login failure tracking / lockout
-// ---------------------------------------------------------------------------
-
-/// Per-account failed-login tracker driving the lockout predicate
-/// ([`admin_locked`]): 5 failures within any trailing 15-minute window lock
-/// the account for 15 minutes (Req 5.5).
+// Login failure tracker
 #[derive(Debug, Default)]
 pub struct AdminLoginTracker {
     failures: HashMap<String, Vec<Instant>>,
 }
 
 impl AdminLoginTracker {
-    /// Create an empty tracker.
     pub fn new() -> Self {
         AdminLoginTracker {
             failures: HashMap::new(),
         }
     }
 
-    /// Whether `username` is currently locked out at `now` (Req 5.5).
     pub fn is_locked(&self, username: &str, now: Instant) -> bool {
         self.failures
             .get(username)
             .is_some_and(|f| admin_locked(f, now))
     }
 
-    /// Record a failed login for `username` at `now`, pruning entries that can
-    /// no longer influence any future lockout decision.
     pub fn record_failure(&mut self, username: &str, now: Instant) {
         let history = self.failures.entry(username.to_string()).or_default();
         history.push(now);
@@ -315,36 +181,17 @@ impl AdminLoginTracker {
         history.retain(|t| now.saturating_duration_since(*t) <= horizon);
     }
 
-    /// Clear the failure history for `username` after a successful login.
     pub fn record_success(&mut self, username: &str) {
         self.failures.remove(username);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Modem status provider
-// ---------------------------------------------------------------------------
-
-/// Source of the current modem status snapshot for the dashboard.
-///
-/// The Modem Manager (task 7.3) owns the serial port; the process wiring
-/// (task 14) supplies an implementation that returns the latest snapshot.
-/// Keeping it behind a trait lets the admin layer stay decoupled from the
-/// modem module and be tested with a stub.
+// Modem status provider trait
 pub trait ModemStatusProvider: Send + Sync {
-    /// The most recent modem status snapshot.
     fn current(&self) -> ModemStatusSnapshot;
 }
 
-// ---------------------------------------------------------------------------
-// Shared handler state
-// ---------------------------------------------------------------------------
-
-/// Shared state for the admin dashboard handlers.
-///
-/// Cloning is cheap: the database handle, session store, login tracker, and
-/// modem-status provider are all reference-counted, so every clone observes
-/// the same sessions and lockout history.
+// Admin handler state
 #[derive(Clone)]
 pub struct AdminState {
     db: Db,
@@ -354,7 +201,6 @@ pub struct AdminState {
 }
 
 impl AdminState {
-    /// Build admin state from a database handle and a modem-status provider.
     pub fn new(db: Db, modem: Arc<dyn ModemStatusProvider>) -> Self {
         AdminState {
             db,
@@ -365,21 +211,7 @@ impl AdminState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
-
-/// Build the admin dashboard router.
-///
-/// Routes:
-/// - `GET  /admin/login`     — render the login form.
-/// - `POST /admin/login`     — authenticate and establish a session (Req 5.1).
-/// - `GET  /admin`           — dashboard: health, signal %, recent activity
-///   (Req 5.7); redirects to login when unauthenticated (Req 5.10).
-/// - `GET  /admin/keys`      — list API keys (Req 5.6).
-/// - `POST /admin/keys`      — create a new API key (Req 5.6).
-/// - `POST /admin/keys/{id}/revoke` — revoke an API key (Req 5.6).
-/// - `POST /admin/logout`    — clear the current session.
+// Admin router
 pub fn router(state: AdminState) -> Router {
     Router::new()
         .route("/admin/login", get(login_form).post(login_submit))
@@ -390,38 +222,21 @@ pub fn router(state: AdminState) -> Router {
         .with_state(state)
 }
 
-// ---------------------------------------------------------------------------
-// Login
-// ---------------------------------------------------------------------------
-
-/// Login form fields.
+// Login form
 #[derive(Debug, Deserialize)]
 pub struct LoginForm {
-    /// Submitted username.
     pub username: String,
-    /// Submitted plaintext password (never stored or logged).
     pub password: String,
 }
 
-/// Outcome of a login attempt produced by [`perform_login`].
+/// Login result variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginResult {
-    /// Credentials matched; carries the new session token (Req 5.1).
     Success { token: String },
-    /// Credentials did not match a stored admin record (Req 5.4).
     Failed,
-    /// The account is locked out due to repeated failures (Req 5.5).
     LockedOut,
 }
 
-/// Authenticate an admin login against the database and update session /
-/// lockout state, auditing the result.
-///
-/// `now` is the monotonic clock used for session/lockout bookkeeping and
-/// `now_utc` is the wall-clock time recorded in the audit log. On success a
-/// session is established and its token returned (Req 5.1). A mismatch (or
-/// unknown user) records the attempt in the audit log (Req 5.4); when the
-/// failure trips the lockout threshold the lockout is also audited (Req 5.5).
 pub async fn perform_login(
     state: &AdminState,
     username: &str,
@@ -429,7 +244,6 @@ pub async fn perform_login(
     now: Instant,
     now_utc: DateTime<Utc>,
 ) -> Result<LoginResult, DbError> {
-    // A locked-out account is rejected before any password work (Req 5.5).
     let already_locked = {
         let tracker = state
             .login_tracker
@@ -449,7 +263,6 @@ pub async fn perform_login(
         return Ok(LoginResult::LockedOut);
     }
 
-    // Look up the stored password hash for this username.
     let row = sqlx::query("SELECT id, password_hash FROM admin_users WHERE username = ?")
         .bind(username)
         .fetch_optional(state.db.pool())
@@ -490,7 +303,7 @@ pub async fn perform_login(
         return Ok(LoginResult::Success { token });
     }
 
-    // Record the failure and determine whether it just triggered a lockout.
+    // Record failure and check if now locked
     let now_locked = {
         let mut tracker = state
             .login_tracker
@@ -500,7 +313,6 @@ pub async fn perform_login(
         tracker.is_locked(username, now)
     };
 
-    // Failed-login attempt is always audited (Req 5.4).
     audit(
         &state.db,
         "admin_login_failed",
@@ -510,7 +322,6 @@ pub async fn perform_login(
     )
     .await?;
 
-    // A newly tripped lockout is audited separately (Req 5.5).
     if now_locked {
         audit(
             &state.db,
@@ -528,14 +339,10 @@ pub async fn perform_login(
     Ok(LoginResult::Failed)
 }
 
-/// `GET /admin/login` — render the login form.
 async fn login_form() -> Html<String> {
     Html(render_login(None))
 }
 
-/// `POST /admin/login` — authenticate and, on success, set the session cookie
-/// and redirect to the dashboard (Req 5.1); otherwise re-render the form with
-/// an authentication error (Req 5.4, 5.5).
 async fn login_submit(State(state): State<AdminState>, Form(form): Form<LoginForm>) -> Response {
     match perform_login(
         &state,
@@ -575,7 +382,6 @@ async fn login_submit(State(state): State<AdminState>, Form(form): Form<LoginFor
     }
 }
 
-/// `POST /admin/logout` — clear the current session and return to login.
 async fn logout(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if let Some(token) = session_token_from_headers(&headers) {
         state
@@ -591,24 +397,13 @@ async fn logout(State(state): State<AdminState>, headers: HeaderMap) -> Response
     response
 }
 
-// ---------------------------------------------------------------------------
-// Session authorization (redirect-to-login middleware, Req 5.10)
-// ---------------------------------------------------------------------------
-
-/// Result of authorizing a request against the session store.
+// Session authorization
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Authz {
-    /// A valid, active session exists for this `admin_id`.
     Authorized(i64),
-    /// No valid session — the request must be redirected to login (Req 5.10).
     Redirect,
 }
 
-/// Authorize a protected request from its headers at `now`.
-///
-/// Reads the session token from the `Cookie` header and validates it against
-/// the store, refreshing activity on success (Req 5.8). A missing, unknown, or
-/// expired session yields [`Authz::Redirect`] (Req 5.9, 5.10).
 pub fn authorize(state: &AdminState, headers: &HeaderMap, now: Instant) -> Authz {
     let Some(token) = session_token_from_headers(headers) else {
         return Authz::Redirect;
@@ -623,24 +418,14 @@ pub fn authorize(state: &AdminState, headers: &HeaderMap, now: Instant) -> Authz
     }
 }
 
-// ---------------------------------------------------------------------------
-// Dashboard (Req 5.7)
-// ---------------------------------------------------------------------------
-
-/// Assembled data shown on the dashboard.
+// Dashboard
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashboardData {
-    /// Overall modem health: online, offline, or error.
     pub health: ServiceHealth,
-    /// Signal quality as a 0..=100 percentage, when known.
     pub signal_percent: Option<u8>,
-    /// The 10 most recent message-activity entries from the last 24 hours.
     pub recent: Vec<ActivityEntry>,
 }
 
-/// Gather the dashboard's modem health, signal percentage, and recent activity
-/// (Req 5.7). Health and signal come from the modem-status provider; recent
-/// activity is read from the message tables and filtered to the last 24 hours.
 pub async fn dashboard_data(
     state: &AdminState,
     now_utc: DateTime<Utc>,
@@ -656,9 +441,6 @@ pub async fn dashboard_data(
     })
 }
 
-/// Read recent message activity (outbound + inbound) from the database within
-/// the 24 hours preceding `now_utc`, as raw [`ActivityEntry`] values for
-/// [`recent_activity`] to filter and order.
 async fn recent_message_activity(
     db: &Db,
     now_utc: DateTime<Utc>,
@@ -709,7 +491,6 @@ async fn recent_message_activity(
     Ok(entries)
 }
 
-/// `GET /admin` — dashboard view, gated by a valid session (Req 5.7, 5.10).
 async fn dashboard(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
         return Redirect::to("/admin/login").into_response();
@@ -724,29 +505,16 @@ async fn dashboard(State(state): State<AdminState>, headers: HeaderMap) -> Respo
     }
 }
 
-// ---------------------------------------------------------------------------
-// API key management (Req 5.6)
-// ---------------------------------------------------------------------------
-
-/// A view of a stored API key for display (never includes the plaintext key).
+// API key management (no plaintext stored)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApiKeyView {
-    /// Primary key.
     pub id: i64,
-    /// Non-reversible identifier (SHA-256 hex), safe to display and audit.
     pub key_identifier: String,
-    /// Optional per-key custom rate limit.
     pub custom_rate_limit: Option<u32>,
-    /// Whether the key has been revoked.
     pub revoked: bool,
-    /// Creation timestamp.
     pub created_at: DateTime<Utc>,
 }
 
-/// Create a new API key, persisting only its hash and non-reversible
-/// identifier, and return the one-time plaintext key alongside its stored
-/// view (Req 5.6). The plaintext is shown to the admin exactly once and is
-/// never persisted or logged.
 pub async fn create_api_key(
     state: &AdminState,
     now_utc: DateTime<Utc>,
@@ -796,7 +564,6 @@ pub async fn create_api_key(
     ))
 }
 
-/// List all stored API keys for the management view (Req 5.6).
 pub async fn list_api_keys(state: &AdminState) -> Result<Vec<ApiKeyView>, DbError> {
     let rows = sqlx::query(
         "SELECT id, key_identifier, custom_rate_limit, revoked, created_at \
@@ -823,14 +590,11 @@ pub async fn list_api_keys(state: &AdminState) -> Result<Vec<ApiKeyView>, DbErro
     Ok(keys)
 }
 
-/// Revoke the API key with the given `id` (Req 5.6). Returns the number of
-/// rows affected so callers can detect an unknown id.
 pub async fn revoke_api_key(
     state: &AdminState,
     id: i64,
     now_utc: DateTime<Utc>,
 ) -> Result<u64, DbError> {
-    // Capture the identifier first so the audit record names the revoked key.
     let identifier: Option<String> =
         sqlx::query("SELECT key_identifier FROM api_keys WHERE id = ?")
             .bind(id)
@@ -866,7 +630,6 @@ pub async fn revoke_api_key(
     Ok(affected)
 }
 
-/// `GET /admin/keys` — render the API key management view (Req 5.6, 5.10).
 async fn keys_view(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
         return Redirect::to("/admin/login").into_response();
@@ -881,7 +644,6 @@ async fn keys_view(State(state): State<AdminState>, headers: HeaderMap) -> Respo
     }
 }
 
-/// `POST /admin/keys` — create a new API key and show it once (Req 5.6, 5.10).
 async fn keys_create(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
         return Redirect::to("/admin/login").into_response();
@@ -903,8 +665,6 @@ async fn keys_create(State(state): State<AdminState>, headers: HeaderMap) -> Res
     }
 }
 
-/// `POST /admin/keys/{id}/revoke` — revoke a key and return to the list
-/// (Req 5.6, 5.10).
 async fn keys_revoke(
     State(state): State<AdminState>,
     headers: HeaderMap,
@@ -923,13 +683,7 @@ async fn keys_revoke(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Audit helper
-// ---------------------------------------------------------------------------
-
-/// Insert a record into the `audit_log` table. Audit failures are surfaced as
-/// [`DbError`] so the caller can decide how to react; no plaintext credential
-/// is ever passed here (Req 5.4, 5.5).
 async fn audit(
     db: &Db,
     event_type: &str,
@@ -950,18 +704,13 @@ async fn audit(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Cookies and tokens
-// ---------------------------------------------------------------------------
-
-/// Generate a high-entropy random session/API token as a 64-char hex string.
+// Token and cookie utilities
 fn random_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     to_hex(&bytes)
 }
 
-/// Lowercase hex-encode a byte slice.
 fn to_hex(bytes: &[u8]) -> String {
     use core::fmt::Write;
     let mut s = String::with_capacity(bytes.len().saturating_mul(2));
@@ -971,9 +720,6 @@ fn to_hex(bytes: &[u8]) -> String {
     s
 }
 
-/// Build the `Set-Cookie` value establishing the session cookie. The cookie is
-/// `HttpOnly` and `SameSite=Strict`, scoped to the whole site, and expires
-/// after the 30-minute idle window (Req 5.8, 5.9).
 fn session_cookie(token: &str) -> String {
     format!(
         "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
@@ -981,19 +727,15 @@ fn session_cookie(token: &str) -> String {
     )
 }
 
-/// Build the `Set-Cookie` value that clears the session cookie on logout.
 fn clear_cookie() -> String {
     format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
 }
 
-/// Extract the session token from a request's `Cookie` header, if present.
 fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
     let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
     parse_cookie(cookie_header, SESSION_COOKIE)
 }
 
-/// Find the value of `name` in a `Cookie` header value of the form
-/// `a=1; b=2; c=3`.
 fn parse_cookie(header_value: &str, name: &str) -> Option<String> {
     header_value.split(';').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
@@ -1005,11 +747,7 @@ fn parse_cookie(header_value: &str, name: &str) -> Option<String> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Views (server-rendered HTML)
-// ---------------------------------------------------------------------------
-
-/// Minimal HTML-escape for interpolated dynamic values.
+// View rendering functions
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1017,7 +755,6 @@ fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Render the login page, optionally with an error banner.
 fn render_login(error: Option<&str>) -> String {
     let banner = match error {
         Some(msg) => format!("<p class=\"error\">{}</p>", esc(msg)),
@@ -1034,7 +771,6 @@ fn render_login(error: Option<&str>) -> String {
     )
 }
 
-/// Render the textual label for an overall health verdict.
 fn health_label(health: ServiceHealth) -> &'static str {
     match health {
         ServiceHealth::Healthy => "online",
@@ -1043,7 +779,6 @@ fn health_label(health: ServiceHealth) -> &'static str {
     }
 }
 
-/// Render the dashboard view (Req 5.7).
 fn render_dashboard(data: &DashboardData) -> String {
     let signal = match data.signal_percent {
         Some(p) => format!("{p}%"),
@@ -1076,8 +811,6 @@ fn render_dashboard(data: &DashboardData) -> String {
     )
 }
 
-/// Render the API key management view (Req 5.6). When `new_key` is supplied it
-/// is shown once as the freshly created plaintext key.
 fn render_keys(keys: &[ApiKeyView], new_key: Option<&str>) -> String {
     let banner = match new_key {
         Some(key) => format!(
@@ -1127,8 +860,6 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    // -- password hashing ---------------------------------------------------
-
     #[test]
     fn hash_then_verify_succeeds() {
         let hash = hash_password("correct horse battery staple");
@@ -1147,9 +878,7 @@ mod tests {
         let a = hash_password(password);
         let b = hash_password(password);
         assert_ne!(a, password);
-        // Random salt => the same password hashes to different strings.
         assert_ne!(a, b);
-        // Both still verify against the original password.
         assert!(verify_password(password, &a));
         assert!(verify_password(password, &b));
     }
@@ -1158,8 +887,6 @@ mod tests {
     fn verify_returns_false_for_malformed_hash() {
         assert!(!verify_password("anything", "not-a-valid-phc-hash"));
     }
-
-    // -- session validity ---------------------------------------------------
 
     #[test]
     fn session_valid_just_under_timeout() {
@@ -1186,8 +913,6 @@ mod tests {
         assert!(!session_valid(&past_boundary, now));
     }
 
-    // -- admin lockout ------------------------------------------------------
-
     #[test]
     fn not_locked_with_fewer_than_five_failures() {
         let start = Instant::now();
@@ -1200,37 +925,27 @@ mod tests {
     #[test]
     fn locked_after_five_failures_within_window() {
         let start = Instant::now();
-        // Five failures spread across 10 minutes (< 15-minute window).
         let failures: Vec<Instant> = (0..5)
             .map(|i| start + Duration::from_secs(i * 120))
             .collect();
-        let trigger = start + Duration::from_secs(4 * 120); // 5th failure
-        // Locked immediately at the trigger.
+        let trigger = start + Duration::from_secs(4 * 120);
         assert!(admin_locked(&failures, trigger));
-        // Still locked just before the 15-minute lock expires.
         assert!(admin_locked(
             &failures,
             trigger + ADMIN_LOCK_DURATION - Duration::from_secs(1)
         ));
-        // Unlocked once the 15-minute lock has elapsed.
         assert!(!admin_locked(&failures, trigger + ADMIN_LOCK_DURATION));
     }
 
     #[test]
     fn not_locked_when_failures_span_more_than_window() {
         let start = Instant::now();
-        // Five failures spread over 20 minutes: no trailing 15-minute window
-        // ever contains all five.
         let failures: Vec<Instant> = (0..5)
-            .map(|i| start + Duration::from_secs(i * 300)) // 5 min apart
+            .map(|i| start + Duration::from_secs(i * 300))
             .collect();
-        // At the last failure only the failures within the prior 15 minutes
-        // count (the 0-minute one falls outside), so fewer than five.
         let last = start + Duration::from_secs(4 * 300);
         assert!(!admin_locked(&failures, last));
     }
-
-    // -- recent activity ----------------------------------------------------
 
     fn at(hours_ago: i64, now: DateTime<Utc>) -> DateTime<Utc> {
         now - chrono::Duration::hours(hours_ago)
@@ -1255,7 +970,6 @@ mod tests {
         ];
         let selected = recent_activity(&entries, now);
         assert_eq!(selected.len(), 2);
-        // Most-recent-first.
         assert_eq!(selected[0].description, "recent");
         assert_eq!(selected[1].description, "older recent");
     }
@@ -1271,7 +985,6 @@ mod tests {
             .collect();
         let selected = recent_activity(&entries, now);
         assert_eq!(selected.len(), RECENT_ACTIVITY_LIMIT);
-        // First entry is the most recent (smallest minutes-ago).
         assert_eq!(selected[0].description, "entry 0");
     }
 
@@ -1348,18 +1061,14 @@ mod handler_tests {
     async fn login_success_establishes_session() {
         let state = test_state().await;
         let id = seed_admin(&state, "admin", "s3cret-pass").await;
-
         let now = Instant::now();
         let result = perform_login(&state, "admin", "s3cret-pass", now, Utc::now())
             .await
             .unwrap();
-
         let token = match result {
             LoginResult::Success { token } => token,
             other => panic!("expected success, got {other:?}"),
         };
-
-        // The returned token authorizes a protected request (Req 5.1, 5.8).
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -1378,7 +1087,6 @@ mod handler_tests {
             .await
             .unwrap();
         assert_eq!(result, LoginResult::Failed);
-        // Failed login attempt is recorded in the audit log (Req 5.4).
         assert_eq!(audit_count(&state, "admin_login_failed").await, 1);
     }
 
@@ -1397,8 +1105,6 @@ mod handler_tests {
         let state = test_state().await;
         seed_admin(&state, "admin", "correct").await;
         let base = Instant::now();
-
-        // Five failures within the window: the fifth trips the lockout.
         let mut last = LoginResult::Failed;
         for i in 0..5 {
             last = perform_login(
@@ -1413,8 +1119,6 @@ mod handler_tests {
         }
         assert_eq!(last, LoginResult::LockedOut);
         assert!(audit_count(&state, "admin_login_locked_out").await >= 1);
-
-        // Even the correct password is rejected while locked (Req 5.5).
         let during = base + Duration::from_secs(60);
         let blocked = perform_login(&state, "admin", "correct", during, Utc::now())
             .await
@@ -1422,16 +1126,11 @@ mod handler_tests {
         assert_eq!(blocked, LoginResult::LockedOut);
     }
 
-    // -- session authorization / redirect ----------------------------------
-
     #[tokio::test]
     async fn unauthenticated_request_redirects() {
         let state = test_state().await;
-        // No cookie at all.
         let headers = HeaderMap::new();
         assert_eq!(authorize(&state, &headers, Instant::now()), Authz::Redirect);
-
-        // Unknown token.
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -1459,42 +1158,29 @@ mod handler_tests {
             HeaderValue::from_str(&format!("{SESSION_COOKIE}={token}")).unwrap(),
         );
 
-        // Still valid just under the idle timeout (Req 5.8).
         let active = start + SESSION_IDLE_TIMEOUT - Duration::from_secs(1);
         assert_eq!(authorize(&state, &headers, active), Authz::Authorized(id));
 
-        // After 30 minutes of inactivity the session expires (Req 5.9).
-        // (Activity was refreshed at `active`, so measure from there.)
         let expired = active + SESSION_IDLE_TIMEOUT;
         assert_eq!(authorize(&state, &headers, expired), Authz::Redirect);
     }
 
-    // -- API key management -------------------------------------------------
-
     #[tokio::test]
     async fn create_list_and_revoke_keys() {
         let state = test_state().await;
-
-        // Create two keys (Req 5.6).
         let (plaintext, view) = create_api_key(&state, Utc::now()).await.unwrap();
         assert!(plaintext.starts_with("sk_"));
-        // The stored identifier is never the plaintext key (Req 3.5).
         assert_ne!(view.key_identifier, plaintext);
         let _ = create_api_key(&state, Utc::now()).await.unwrap();
-
         let keys = list_api_keys(&state).await.unwrap();
         assert_eq!(keys.len(), 2);
         assert!(keys.iter().all(|k| !k.revoked));
-
-        // Revoke the first key.
         let target = keys[0].id;
         let affected = revoke_api_key(&state, target, Utc::now()).await.unwrap();
         assert_eq!(affected, 1);
-
         let keys = list_api_keys(&state).await.unwrap();
         let revoked = keys.iter().find(|k| k.id == target).unwrap();
         assert!(revoked.revoked);
-
         assert_eq!(audit_count(&state, "api_key_created").await, 2);
         assert_eq!(audit_count(&state, "api_key_revoked").await, 1);
     }

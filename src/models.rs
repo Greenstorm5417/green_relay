@@ -1,24 +1,21 @@
 //! Shared data models and enums (messages, API keys, statuses).
 //!
-//! These types mirror the database schema described in `design.md`
-//! ("Data Models"). They derive `serde` `Serialize`/`Deserialize` for API
-//! and persistence round-tripping, and `Debug`, `Clone`, `PartialEq`,
-//! `Eq` so records can be compared directly in property tests.
+//! These types mirror the database schema and derive `serde` for API/persistence
+//! and comparison traits for property tests.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Lifecycle status of an [`OutboundMessage`].
 ///
-/// Stored in the database as the lowercase text values `queued`, `sent`,
-/// and `failed`; the `serde` rename keeps the wire/storage representation
-/// stable regardless of the Rust identifier casing.
+/// Stored in the database as lowercase text; `serde(rename_all = "lowercase")`
+/// keeps the wire/storage representation stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageStatus {
     /// Accepted and persisted, not yet transmitted to the modem.
     Queued,
-    /// Successfully handed to the modem (a `+CMGS: <ref>` was returned).
+    /// Successfully handed to the modem.
     Sent,
     /// Transmission failed (modem error code, timeout, or retry exhaustion).
     Failed,

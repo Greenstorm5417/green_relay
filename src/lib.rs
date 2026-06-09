@@ -1,23 +1,8 @@
 //! SMS Microservice library crate.
-//!
-//! This crate is organized into layers (see `design.md`):
-//! - Domain layer (pure logic): `sms`, `ratelimit`, `health`
-//! - Infrastructure layer: `modem`, `db`, `logging`
-//! - REST/Admin layer: `api`, `auth`, `admin`
-//! - Cross-cutting: `config`, `error` (central `ServiceError`), `models`
-//!
-//! The [`run`] entry point wires these layers into the full process lifecycle:
-//! load and validate configuration, initialize structured logging to stdout,
-//! run database migrations before serving, spawn the single-owner Modem
-//! Manager, serve the merged REST + admin router, and shut down gracefully on
-//! `SIGTERM`/Ctrl-C within a bounded grace period (Req 11.2–11.6).
+//! Layers: domain (sms, ratelimit, health), infrastructure (modem, db, logging), REST/admin (api, auth, admin), cross-cutting (config, error, models).
+//! [`run`] entry point orchestrates startup, migrations, modem manager, serving, and graceful shutdown.
 
-// Panic-hardening: the shipped library + binary must not panic at runtime, so
-// the common panic sources are denied here. These attributes live on the crate
-// (not in `Cargo.toml`'s `[lints]`) so they apply only to this crate and the
-// binary, leaving integration tests and benches free to panic. Panicking
-// inside this crate's own `#[cfg(test)]`/`#[test]` code stays allowed via
-// `clippy.toml`. `unsafe` is forbidden in `Cargo.toml`.
+// Panic-hardening: deny common panic sources.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -30,9 +15,7 @@
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects
 )]
-// `indexing_slicing`/`arithmetic_side_effects` have no `clippy.toml` in-test
-// allowance, so relax those two inside `#[cfg(test)]` builds only; the normal
-// (non-test) lib compilation still denies them in production code.
+// Relax indexing/arithmetic checks in test builds only.
 #![cfg_attr(test, allow(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 
 pub mod admin;
@@ -54,23 +37,17 @@ use std::time::Duration;
 use crate::health::ModemStatusSnapshot;
 use crate::modem::ModemHandle;
 
-/// Buffer size for the Modem Manager command channel. Sized so transient
-/// bursts of concurrent requests queue without blocking handlers; the manager
-/// still processes them one at a time (Req 8.3).
+/// Buffer size for the Modem Manager command channel.
 const MODEM_CHANNEL_BUFFER: usize = 32;
 
-/// Total grace period for shutdown after a termination signal is received
-/// (Req 11.2). If in-flight work does not complete within this budget the
-/// process aborts and exits non-zero (Req 11.3).
+/// Total grace period for shutdown after a termination signal.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
 /// A fatal error encountered while starting or running the service.
-///
-/// Each variant maps to a non-zero process exit. [`RunError::Config`] carries
-/// the offending configuration key so startup can name it (Req 11.5).
+/// Each variant maps to a non-zero process exit.
 #[derive(Debug)]
 pub enum RunError {
-    /// Configuration was missing or invalid (Req 11.5).
+    /// Configuration was missing or invalid.
     Config(config::ConfigError),
     /// A database connection or migration error occurred before serving
     /// (Req 6.7, 11.3).
@@ -141,10 +118,7 @@ fn build_router(config: &config::Config, db: db::Db, modem: ModemHandle) -> axum
     api::router(api_state).merge(admin::router(admin_state))
 }
 
-/// Resolve once a termination signal is received: `SIGTERM` on Unix (the
-/// systemd stop signal, Req 11.2) or Ctrl-C on any platform. `SIGTERM` is
-/// gated behind `cfg(unix)` since it is unavailable on Windows; Ctrl-C is the
-/// cross-platform trigger there.
+/// Resolve once a termination signal is received: `SIGTERM` (Unix) or Ctrl-C (any platform).
 async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -194,9 +168,7 @@ async fn shutdown_watchdog(notified: tokio::sync::oneshot::Receiver<()>) {
 /// 30-second grace period — forcing a non-zero exit on timeout (Req 11.2,
 /// 11.3).
 pub async fn run() -> Result<(), RunError> {
-    // 1. Load and validate configuration first (Req 11.1, 11.5). Logging is
-    //    not yet initialized at its configured level, so a failure here is
-    //    surfaced via a best-effort stdout log record naming the offending key.
+    // Load and validate configuration.
     let config = match config::load() {
         Ok(config) => config,
         Err(error) => {
@@ -211,7 +183,7 @@ pub async fn run() -> Result<(), RunError> {
         }
     };
 
-    // 2. Initialize logging at the configured minimum severity (Req 7.4, 11.6).
+    // Initialize logging at the configured minimum severity.
     let severity =
         logging::Severity::parse(config.log_level.as_str()).unwrap_or(logging::Severity::Info);
     if let Err(error) = logging::init_subscriber(severity) {
@@ -220,16 +192,13 @@ pub async fn run() -> Result<(), RunError> {
         eprintln!("warning: {error}");
     }
 
-    // 3. Connect to the database and run migrations before serving (Req 11.3).
-    //    A migration failure keeps the service from accepting requests
-    //    (Req 6.7) and exits non-zero.
+    // Connect to the database and run migrations before serving.
     let db = db::Db::connect(&config.database_path)
         .await
         .map_err(RunError::Db)?;
     db.run_migrations().await.map_err(RunError::Db)?;
 
-    // 4. Spawn the single-owner Modem Manager (Req 8.1). It owns the serial
-    //    port and returns when its command channel closes during shutdown.
+    // Spawn the Modem Manager.
     let (modem_handle, modem_endpoint) = modem::new_modem(MODEM_CHANNEL_BUFFER);
     let modem_task = tokio::spawn(modem::run_modem_manager(
         config.clone(),
@@ -237,26 +206,22 @@ pub async fn run() -> Result<(), RunError> {
         modem_endpoint,
     ));
 
-    // 5. Assemble the merged REST + admin router.
+    // Assemble the merged REST + admin router.
     let app = build_router(&config, db.clone(), modem_handle.clone());
 
-    // 6. Bind the listener before announcing startup so the log reflects a
-    //    truly bound address (Req 11.4).
+    // Bind the listener.
     let listener = tokio::net::TcpListener::bind(config.listen_addr)
         .await
         .map_err(RunError::Bind)?;
 
-    // 7. Startup log identifying the bound listen address and serial port
-    //    (Req 11.4). Written to stdout by the subscriber (Req 11.6).
+    // Startup log.
     tracing::info!(
         listen_addr = %config.listen_addr,
         serial_port = %config.serial_port,
         "sms microservice started"
     );
 
-    // 8. Serve with graceful shutdown on SIGTERM/Ctrl-C, bounded by the grace
-    //    period (Req 11.2, 11.3). The signal future notifies the watchdog when
-    //    shutdown begins so the watchdog can enforce the 30s budget.
+    // Serve with graceful shutdown on SIGTERM/Ctrl-C, bounded by grace period.
     let (notify_tx, notify_rx) = tokio::sync::oneshot::channel();
     let graceful = async move {
         shutdown_signal().await;

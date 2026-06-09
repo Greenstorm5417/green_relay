@@ -426,9 +426,6 @@ pub fn load() -> Result<Config, ConfigError> {
 mod tests {
     use super::*;
 
-    /// Build a minimal map containing only the two required keys
-    /// (`LISTEN_ADDR` and `DATABASE_PATH`). Every other key is optional and
-    /// falls back to its documented default.
     fn minimal_valid_map() -> HashMap<String, String> {
         let mut map = HashMap::new();
         map.insert(KEY_LISTEN_ADDR.to_string(), "127.0.0.1:8080".to_string());
@@ -436,8 +433,6 @@ mod tests {
         map
     }
 
-    /// Build a map that sets every recognized key to a valid value so we can
-    /// assert the full typed result of `from_map`.
     fn complete_valid_map() -> HashMap<String, String> {
         let mut map = HashMap::new();
         map.insert(KEY_LISTEN_ADDR.to_string(), "0.0.0.0:9000".to_string());
@@ -457,8 +452,6 @@ mod tests {
         map.insert(KEY_SEND_RETRY_DELAY_SECS.to_string(), "7".to_string());
         map
     }
-
-    // --- Missing required keys (Req 11.5) ---------------------------------
 
     #[test]
     fn missing_listen_addr_reports_that_key() {
@@ -492,8 +485,6 @@ mod tests {
         assert_eq!(err, ConfigError::MissingKey(KEY_DATABASE_PATH.to_string()));
         assert_eq!(err.key(), Some(KEY_DATABASE_PATH));
     }
-
-    // --- Out-of-range values name the offending key (Req 11.5) ------------
 
     #[test]
     fn at_timeout_below_range_reports_that_key() {
@@ -556,8 +547,6 @@ mod tests {
         assert!(matches!(err, ConfigError::InvalidValue { .. }));
     }
 
-    // --- Unparseable values name the offending key (Req 11.5) -------------
-
     #[test]
     fn non_numeric_baud_rate_reports_that_key() {
         let mut map = minimal_valid_map();
@@ -596,8 +585,6 @@ mod tests {
         assert_eq!(err.key(), Some(KEY_LOG_LEVEL));
         assert!(matches!(err, ConfigError::InvalidValue { .. }));
     }
-
-    // --- Valid maps parse successfully ------------------------------------
 
     #[test]
     fn minimal_map_uses_documented_defaults() {

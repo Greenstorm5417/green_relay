@@ -1,9 +1,4 @@
-//! SMS domain logic: validation, segmentation, and CMGS payload building.
-//!
-//! This module holds pure functions that are the heart of the property-based
-//! tests. This file currently contains the phone-number / body validation and
-//! field-presence checks (task 5.1). Segmentation and CMGS payload building
-//! are added separately (task 5.5).
+//! SMS domain logic: validation, segmentation, and payload building.
 
 /// Maximum number of characters allowed in a message body (Req 1.1, 1.10).
 pub const MAX_BODY_CHARS: usize = 1530;
@@ -15,35 +10,25 @@ const E164_MIN_DIGITS: usize = 7;
 const E164_MAX_DIGITS: usize = 15;
 
 /// A validation failure for a send request.
-///
-/// Variants map to the HTTP 400 client-error responses described in the
-/// design's Error Handling section (Req 1.6, 1.7, 1.10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    /// One or more required fields were absent from the request. The vector
-    /// names exactly the missing fields (e.g. `"to"`, `"body"`) (Req 1.6).
+    /// Missing required fields.
     MissingFields(Vec<String>),
-    /// The supplied phone number is not in E.164 format (Req 1.7).
+    /// Invalid E.164 format.
     InvalidPhoneNumber,
-    /// The message body is empty (fewer than 1 character) (Req 1.1).
+    /// Empty message body.
     BodyEmpty,
-    /// The message body exceeds the maximum allowed length (Req 1.10).
+    /// Message body exceeds max length.
     BodyTooLong,
 }
 
-/// Validate that `s` is a well-formed E.164 phone number.
-///
-/// A valid number is a leading `+` followed by 7 to 15 decimal digits and no
-/// other characters (Req 1.7).
+/// Validate E.164 phone number format.
 pub fn validate_e164(s: &str) -> Result<(), ValidationError> {
     let digits = match s.strip_prefix('+') {
         Some(rest) => rest,
         None => return Err(ValidationError::InvalidPhoneNumber),
     };
 
-    // Every remaining character must be an ASCII decimal digit. Counting bytes
-    // is equivalent to counting characters here because ASCII digits are
-    // single-byte, and any non-ASCII-digit character is rejected outright.
     if !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err(ValidationError::InvalidPhoneNumber);
     }
@@ -56,8 +41,7 @@ pub fn validate_e164(s: &str) -> Result<(), ValidationError> {
     }
 }
 
-/// Validate that `body` has a character length between 1 and 1,530 inclusive
-/// (Req 1.1, 1.10).
+/// Validate message body length.
 pub fn validate_body(body: &str) -> Result<(), ValidationError> {
     let len = body.chars().count();
     if len == 0 {
@@ -223,10 +207,6 @@ impl std::error::Error for SegmentError {}
 
 /// Number of GSM-7 septets a single character occupies: characters in the
 /// GSM-7 extension table take two septets, all others take one.
-///
-/// Implemented as a direct `match` rather than an array `contains` scan: this
-/// runs once per character during length measurement and segmentation, so the
-/// branch-friendly match keeps the per-character cost minimal.
 fn gsm7_char_len(c: char) -> usize {
     match c {
         '^' | '{' | '}' | '\\' | '[' | '~' | ']' | '|' | '€' => 2,
@@ -248,7 +228,6 @@ fn gsm7_len(s: &str) -> usize {
 /// boundaries, so concatenating the segment texts reproduces the original
 /// body exactly. (Req 1.8)
 pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
-    // Single part if the whole body fits within the single-part budget.
     let total_septets = gsm7_len(body);
     if total_septets <= SINGLE_PART_MAX {
         return Ok(vec![Segment {
@@ -257,10 +236,6 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
         }]);
     }
 
-    // Otherwise split into <= MULTI_PART_MAX-septet parts on char boundaries,
-    // building the `Segment`s directly (no intermediate `Vec<String>` and
-    // re-collect). The part count is bounded by the validated body length, so
-    // it comfortably fits the `u8` sequence number.
     let mut segments: Vec<Segment> = Vec::with_capacity(
         total_septets
             .checked_div(MULTI_PART_MAX)
@@ -272,9 +247,6 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
 
     for c in body.chars() {
         let clen = gsm7_char_len(c);
-        // Start a new part if adding this character would overflow the
-        // per-part budget. clen is at most 2 and MULTI_PART_MAX is >= 2, so a
-        // single character always fits in a fresh part.
         if current_len.saturating_add(clen) > MULTI_PART_MAX {
             let seq = segments.len().saturating_add(1) as u8;
             segments.push(Segment {
