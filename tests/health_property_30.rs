@@ -6,7 +6,7 @@
 
 use proptest::prelude::*;
 use sms_micro_service::health::{
-    deliverability_gate, DeliverabilityOutcome, ModemStatusSnapshot, SimStatus,
+    DeliverabilityOutcome, ModemStatusSnapshot, SimStatus, deliverability_gate,
 };
 
 /// Generate an arbitrary SIM status across all variants so that the `Ready`

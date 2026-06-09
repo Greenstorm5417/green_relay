@@ -5,7 +5,7 @@
 //! `validate_body` function of the `sms_micro_service` library.
 
 use proptest::prelude::*;
-use sms_micro_service::sms::{validate_body, MAX_BODY_CHARS};
+use sms_micro_service::sms::{MAX_BODY_CHARS, validate_body};
 
 /// Independent oracle for the body-length rule, written separately from the
 /// implementation so the property checks the implementation against the

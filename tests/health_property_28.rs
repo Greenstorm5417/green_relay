@@ -5,7 +5,7 @@
 //! public `derive_health` function of the `sms_micro_service` library.
 
 use proptest::prelude::*;
-use sms_micro_service::health::{derive_health, ModemStatusSnapshot, ServiceHealth, SimStatus};
+use sms_micro_service::health::{ModemStatusSnapshot, ServiceHealth, SimStatus, derive_health};
 
 /// Strategy over all three SIM states so the "not READY" branch is covered by
 /// both `NotReady` and `Unknown`.

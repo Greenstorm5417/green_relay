@@ -58,19 +58,14 @@ pub const KNOWN_KEYS: &[&str] = &[
 ///
 /// Defined here because it is part of the validated [`Config`]; the logging
 /// module consumes it when initializing the subscriber.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogLevel {
     Trace,
     Debug,
+    #[default]
     Info,
     Warn,
     Error,
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        LogLevel::Info
-    }
 }
 
 impl LogLevel {
@@ -213,12 +208,11 @@ pub fn parse_config_file(contents: &str) -> HashMap<String, String> {
 /// Strip one layer of matching surrounding single or double quotes.
 fn strip_quotes(s: &str) -> &str {
     let bytes = s.as_bytes();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return &s[1..s.len() - 1];
-        }
+    if let (Some(&first), Some(&last)) = (bytes.first(), bytes.last())
+        && bytes.len() >= 2
+        && ((first == b'"' && last == b'"') || (first == b'\'' && last == b'\''))
+    {
+        return s.get(1..s.len().saturating_sub(1)).unwrap_or(s);
     }
     s
 }
@@ -233,16 +227,15 @@ impl Config {
     /// defaults when absent or empty.
     pub fn from_map(map: &HashMap<String, String>) -> Result<Config, ConfigError> {
         let listen_addr_raw = require(map, KEY_LISTEN_ADDR)?;
-        let listen_addr = SocketAddr::from_str(listen_addr_raw).map_err(|e| {
-            ConfigError::InvalidValue {
+        let listen_addr =
+            SocketAddr::from_str(listen_addr_raw).map_err(|e| ConfigError::InvalidValue {
                 key: KEY_LISTEN_ADDR.to_string(),
                 value: listen_addr_raw.to_string(),
                 reason: format!("expected a socket address like 0.0.0.0:8080 ({e})"),
-            }
-        })?;
+            })?;
 
-        let serial_port = optional_string(map, KEY_SERIAL_PORT)
-            .unwrap_or_else(|| "/dev/ttyUSB2".to_string());
+        let serial_port =
+            optional_string(map, KEY_SERIAL_PORT).unwrap_or_else(|| "/dev/ttyUSB2".to_string());
 
         let baud_rate = parse_u32_or_default(map, KEY_BAUD_RATE, 115_200)?;
         if baud_rate == 0 {

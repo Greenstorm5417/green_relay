@@ -7,6 +7,21 @@
 //! and the process exits non-zero. Any other startup or shutdown failure also
 //! exits non-zero (Req 11.3).
 
+// Same panic-hardening denies as the library crate (see `lib.rs`); the binary
+// must not panic at runtime.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
+
 use std::process::ExitCode;
 
 use sms_micro_service::{RunError, run};
@@ -25,10 +40,10 @@ fn main() -> ExitCode {
         Err(error) => {
             // Name the offending configuration key explicitly on stderr so the
             // operator sees it even outside the structured log (Req 11.5).
-            if let RunError::Config(_) = &error {
-                if let Some(key) = error.config_key() {
-                    eprintln!("configuration key in error: {key}");
-                }
+            if let RunError::Config(_) = &error
+                && let Some(key) = error.config_key()
+            {
+                eprintln!("configuration key in error: {key}");
             }
             eprintln!("{error}");
             ExitCode::FAILURE

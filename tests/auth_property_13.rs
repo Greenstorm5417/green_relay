@@ -11,7 +11,7 @@
 //! the boundary of the *character* count (not byte length) that matters.
 
 use proptest::prelude::*;
-use sms_micro_service::auth::{passes_guard, MAX_KEY_LEN};
+use sms_micro_service::auth::{MAX_KEY_LEN, passes_guard};
 
 /// Independent oracle for the guard, written separately from the
 /// implementation: a key is rejected (no lookup) if and only if its character
@@ -19,7 +19,7 @@ use sms_micro_service::auth::{passes_guard, MAX_KEY_LEN};
 /// its length is within `1..=MAX_KEY_LEN`.
 fn guard_should_accept(s: &str) -> bool {
     let len = s.chars().count();
-    len >= 1 && len <= MAX_KEY_LEN
+    (1..=MAX_KEY_LEN).contains(&len)
 }
 
 /// Generate strings whose character length clusters around the interesting

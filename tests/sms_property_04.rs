@@ -5,7 +5,7 @@
 //! `segment_message` function of the `sms_micro_service` library.
 
 use proptest::prelude::*;
-use sms_micro_service::sms::{segment_message, SegmentError};
+use sms_micro_service::sms::{SegmentError, segment_message};
 
 /// Per-part GSM-7 budget for a concatenated (multi-part) SMS.
 const MULTI_PART_MAX: usize = 153;

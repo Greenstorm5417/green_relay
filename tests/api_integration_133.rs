@@ -330,10 +330,7 @@ async fn health_response_shape_when_healthy() {
     let app = app_with(temp.db.clone(), healthy_snapshot());
 
     // `/health` is unauthenticated (Req 9.1).
-    let resp = app
-        .oneshot(get_request("/health", None))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/health", None)).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -351,10 +348,7 @@ async fn status_response_shape_when_all_values_available() {
     let app = app_with(temp.db.clone(), healthy_snapshot());
 
     // `/status` is unauthenticated (Req 9.2).
-    let resp = app
-        .oneshot(get_request("/status", None))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/status", None)).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -371,10 +365,7 @@ async fn status_response_reports_unavailable_fields() {
     let temp = ready_db().await;
     let app = app_with(temp.db.clone(), unavailable_snapshot());
 
-    let resp = app
-        .oneshot(get_request("/status", None))
-        .await
-        .unwrap();
+    let resp = app.oneshot(get_request("/status", None)).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -412,9 +403,6 @@ async fn health_and_status_do_not_require_a_key() {
         .unwrap();
     assert_eq!(health.status(), StatusCode::OK);
 
-    let status = app
-        .oneshot(get_request("/status", None))
-        .await
-        .unwrap();
+    let status = app.oneshot(get_request("/status", None)).await.unwrap();
     assert_eq!(status.status(), StatusCode::OK);
 }

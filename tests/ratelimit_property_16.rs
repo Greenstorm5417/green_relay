@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::ratelimit::{decide, RateDecision, WindowState};
+use sms_micro_service::ratelimit::{RateDecision, WindowState, decide};
 
 /// Generate a window length in whole seconds within a realistic range. The
 /// window is always at least 1 second so the upper bound on `Retry-After`

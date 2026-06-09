@@ -45,7 +45,10 @@ fn temp_path(prefix: &str, suffix: &str) -> PathBuf {
         .as_nanos();
     let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
     let mut p = std::env::temp_dir();
-    p.push(format!("{prefix}_{}_{nanos}_{n}{suffix}", std::process::id()));
+    p.push(format!(
+        "{prefix}_{}_{nanos}_{n}{suffix}",
+        std::process::id()
+    ));
     p
 }
 
@@ -129,10 +132,10 @@ fn wait_for_startup(rx: &Receiver<String>, timeout: Duration) -> Option<String> 
         let remaining = deadline.checked_duration_since(Instant::now())?;
         match rx.recv_timeout(remaining) {
             Ok(line) => {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if is_startup_record(&v) {
-                        return Some(line);
-                    }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
+                    && is_startup_record(&v)
+                {
+                    return Some(line);
                 }
             }
             Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => return None,

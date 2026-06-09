@@ -234,8 +234,7 @@ pub fn parse_send_outcome(lines: &[&str]) -> SendOutcome {
             | LineClass::Terminator(AtResult::CmeError(code)) => {
                 return SendOutcome::failed(Some(code));
             }
-            LineClass::Terminator(AtResult::Error)
-            | LineClass::Terminator(AtResult::Timeout) => {
+            LineClass::Terminator(AtResult::Error) | LineClass::Terminator(AtResult::Timeout) => {
                 return SendOutcome::failed(None);
             }
             LineClass::NonTerminating => {}
@@ -654,7 +653,7 @@ impl ModemHandle {
     pub fn status(&self) -> ModemStatusSnapshot {
         self.status
             .lock()
-            .expect("modem status mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -737,12 +736,14 @@ impl SerialTransport for SerialPortTransport {
     }
 
     async fn read_line(&mut self, timeout: Duration) -> io::Result<Option<String>> {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
         loop {
             if let Some(pos) = self.pending.iter().position(|&b| b == b'\n') {
                 let drained: Vec<u8> = self.pending.drain(..=pos).collect();
                 let text = String::from_utf8_lossy(&drained);
-                let line = text.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
+                let line = text.trim_end_matches(['\r', '\n']).to_string();
                 return Ok(Some(line));
             }
 
@@ -760,7 +761,11 @@ impl SerialTransport for SerialPortTransport {
                         "serial port closed",
                     ));
                 }
-                Ok(Ok(n)) => self.pending.extend_from_slice(&tmp[..n]),
+                Ok(Ok(n)) => {
+                    if let Some(chunk) = tmp.get(..n) {
+                        self.pending.extend_from_slice(chunk);
+                    }
+                }
                 Ok(Err(e)) => return Err(e),
             }
         }
@@ -782,7 +787,7 @@ pub async fn exchange<T: SerialTransport>(
     command: &str,
     timeout: Duration,
 ) -> io::Result<AtExchange> {
-    let mut bytes = Vec::with_capacity(command.len() + 1);
+    let mut bytes = Vec::with_capacity(command.len().saturating_add(1));
     bytes.extend_from_slice(command.as_bytes());
     bytes.push(b'\r');
     t.write_bytes(&bytes).await?;
@@ -799,7 +804,9 @@ async fn collect_until_terminator<T: SerialTransport>(
     command: &str,
     timeout: Duration,
 ) -> io::Result<AtExchange> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     let mut lines: Vec<String> = Vec::new();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -920,10 +927,10 @@ pub fn parse_cpin(lines: &[String]) -> SimStatus {
 /// Whether an `AT+CREG?` response reports network registration (stat 1 home or
 /// 5 roaming) (Req 9.5).
 pub fn parse_creg_registered(lines: &[String]) -> bool {
-    if let Some(rest) = lines.iter().find_map(|l| l.trim().strip_prefix("+CREG:")) {
-        if let Some(stat) = rest.split(',').nth(1) {
-            return matches!(stat.trim().trim_matches('"'), "1" | "5");
-        }
+    if let Some(rest) = lines.iter().find_map(|l| l.trim().strip_prefix("+CREG:"))
+        && let Some(stat) = rest.split(',').nth(1)
+    {
+        return matches!(stat.trim().trim_matches('"'), "1" | "5");
     }
     false
 }
@@ -936,7 +943,7 @@ pub fn parse_csq_percent(lines: &[String]) -> Option<u8> {
     if rssi == 99 || rssi > 31 {
         return None;
     }
-    Some(((rssi * 100) / 31) as u8)
+    Some((rssi.saturating_mul(100) / 31) as u8)
 }
 
 /// Recover the operator name from an `AT+COPS?` response (Req 9.2).
@@ -971,7 +978,9 @@ async fn refresh_status<T: SerialTransport>(
     let cops = exchange(t, "AT+COPS?", timeout).await?;
     let operator = parse_cops_operator(&cops.lines);
 
-    let mut snapshot = status.lock().expect("modem status mutex poisoned");
+    let mut snapshot = status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     snapshot.serial_connected = true;
     snapshot.responsive = responsive;
     snapshot.sim_status = sim_status;
@@ -1142,7 +1151,9 @@ pub async fn handle_send<T: SerialTransport>(
 
     // Defer the send when the modem is not ready to deliver (Req 10.5).
     let deliverable = {
-        let snapshot = status.lock().expect("modem status mutex poisoned");
+        let snapshot = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         snapshot.sim_status.is_ready() && snapshot.registered
     };
     if !deliverable {
@@ -1208,7 +1219,9 @@ async fn handle_request<T: SerialTransport>(
             let exchange = exchange(t, &command, timeout).await?;
             scan_cmti(&exchange.lines, pending);
             {
-                let mut snapshot = status.lock().expect("modem status mutex poisoned");
+                let mut snapshot = status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 snapshot.responsive = exchange.result != AtResult::Timeout;
             }
             let _ = reply.send(exchange);
@@ -1315,7 +1328,9 @@ pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint) {
                 attempt = 0;
                 tracing::info!(port = %cfg.serial_port, baud = cfg.baud_rate, "serial port opened");
                 {
-                    let mut snapshot = status.lock().expect("modem status mutex poisoned");
+                    let mut snapshot = status
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     snapshot.serial_connected = true;
                     snapshot.responsive = true;
                 }
@@ -1376,7 +1391,9 @@ pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint) {
 
 /// Mark the shared snapshot as disconnected and unresponsive.
 fn mark_disconnected(status: &Arc<Mutex<ModemStatusSnapshot>>) {
-    let mut snapshot = status.lock().expect("modem status mutex poisoned");
+    let mut snapshot = status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     snapshot.serial_connected = false;
     snapshot.responsive = false;
 }
@@ -1390,13 +1407,16 @@ async fn backoff_or_giveup(
     status: &Arc<Mutex<ModemStatusSnapshot>>,
     attempt: &mut u32,
 ) -> bool {
-    *attempt += 1;
+    *attempt = attempt.saturating_add(1);
     if *attempt > cfg.reopen_max_attempts {
         audit(
             db,
             "modem_reconnect_exhausted",
             None,
-            &format!("exhausted {} serial reopen attempts", cfg.reopen_max_attempts),
+            &format!(
+                "exhausted {} serial reopen attempts",
+                cfg.reopen_max_attempts
+            ),
         )
         .await;
         mark_disconnected(status);

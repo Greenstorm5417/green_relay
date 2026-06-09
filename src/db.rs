@@ -24,8 +24,8 @@
 //! Timestamps are stored as RFC 3339 / ISO 8601 text in UTC so they round-trip
 //! losslessly through SQLite's text affinity.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -242,10 +242,9 @@ impl Db {
         .execute(&mut *conn)
         .await?;
 
-        let current: Option<i64> =
-            sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
-                .fetch_one(&mut *conn)
-                .await?;
+        let current: Option<i64> = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
+            .fetch_one(&mut *conn)
+            .await?;
         let current = current.unwrap_or(0);
 
         for migration in MIGRATIONS {
@@ -418,10 +417,7 @@ impl Db {
     }
 
     /// Fetch a single outbound message by id, or `None` if it does not exist.
-    pub async fn get_outbound_message(
-        &self,
-        id: i64,
-    ) -> Result<Option<OutboundMessage>, DbError> {
+    pub async fn get_outbound_message(&self, id: i64) -> Result<Option<OutboundMessage>, DbError> {
         let row = sqlx::query(
             "SELECT id, to_number, body, status, part_count, msg_reference, error_code, created_at, updated_at \
                FROM outbound_messages WHERE id = ?",
@@ -478,10 +474,7 @@ impl Db {
     }
 
     /// Fetch a single inbound message by id, or `None` if it does not exist.
-    pub async fn get_inbound_message(
-        &self,
-        id: i64,
-    ) -> Result<Option<InboundMessage>, DbError> {
+    pub async fn get_inbound_message(&self, id: i64) -> Result<Option<InboundMessage>, DbError> {
         let row = sqlx::query(
             "SELECT id, from_number, body, received_at FROM inbound_messages WHERE id = ?",
         )

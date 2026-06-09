@@ -6,7 +6,7 @@
 //! `sms_micro_service` library.
 
 use proptest::prelude::*;
-use sms_micro_service::modem::{format_cmgr_response, parse_cmgr, ParsedInbound};
+use sms_micro_service::modem::{ParsedInbound, format_cmgr_response, parse_cmgr};
 
 /// Independent oracle mirroring the modem's terminating-result-code grammar.
 ///
@@ -26,9 +26,9 @@ fn line_is_terminator(line: &str) -> bool {
 /// trailing whitespace (which the parser trims).
 fn sender_strategy() -> impl Strategy<Value = String> {
     prop_oneof![
-        "\\+[0-9]{7,15}",             // E.164, e.g. +14155552671
-        "[0-9]{3,15}",                // bare numeric address
-        "[A-Za-z][A-Za-z0-9]{1,10}",  // alphanumeric sender ID
+        "\\+[0-9]{7,15}",            // E.164, e.g. +14155552671
+        "[0-9]{3,15}",               // bare numeric address
+        "[A-Za-z][A-Za-z0-9]{1,10}", // alphanumeric sender ID
     ]
     .prop_map(|s| s.to_string())
 }

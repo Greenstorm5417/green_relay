@@ -12,6 +12,29 @@
 //! Manager, serve the merged REST + admin router, and shut down gracefully on
 //! `SIGTERM`/Ctrl-C within a bounded grace period (Req 11.2–11.6).
 
+// Panic-hardening: the shipped library + binary must not panic at runtime, so
+// the common panic sources are denied here. These attributes live on the crate
+// (not in `Cargo.toml`'s `[lints]`) so they apply only to this crate and the
+// binary, leaving integration tests and benches free to panic. Panicking
+// inside this crate's own `#[cfg(test)]`/`#[test]` code stays allowed via
+// `clippy.toml`. `unsafe` is forbidden in `Cargo.toml`.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_in_result,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
+// `indexing_slicing`/`arithmetic_side_effects` have no `clippy.toml` in-test
+// allowance, so relax those two inside `#[cfg(test)]` builds only; the normal
+// (non-test) lib compilation still denies them in production code.
+#![cfg_attr(test, allow(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
+
 pub mod admin;
 pub mod api;
 pub mod auth;

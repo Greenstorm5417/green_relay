@@ -1,0 +1,6 @@
+# Panicking is fine in tests: assertions, fixtures, and `unwrap`/`expect` on
+# known-good test data keep tests readable. Production code stays panic-free
+# via the denied lints in Cargo.toml.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

@@ -59,10 +59,12 @@ pub fn hash_password(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
         // Hashing only fails for invalid parameters; `Argon2::default()` and a
-        // generated salt are always valid, so this cannot fail in practice.
-        .expect("argon2 hashing with default parameters and a valid salt cannot fail")
-        .to_string()
+        // generated salt are always valid, so the fallback is unreachable. An
+        // empty hash here would simply fail every later verification (closed),
+        // so this stays panic-free without weakening security.
+        .unwrap_or_default()
 }
 
 /// Verify a plaintext `password` against a stored Argon2 `stored_hash`.
@@ -135,13 +137,13 @@ pub fn admin_locked(failures: &[Instant], now: Instant) -> bool {
     let mut sorted: Vec<Instant> = failures.to_vec();
     sorted.sort_unstable();
 
-    for i in 0..sorted.len() {
-        let trigger = sorted[i];
+    for (i, &trigger) in sorted.iter().enumerate() {
         // Count failures within the trailing 15-minute window ending at this
         // failure. Because `sorted` is ascending, every earlier entry is <=
         // `trigger`, so the elapsed duration is well-defined and non-negative.
-        let count = sorted[..=i]
+        let count = sorted
             .iter()
+            .take(i.saturating_add(1))
             .filter(|&&f| trigger.saturating_duration_since(f) <= ADMIN_FAILURE_WINDOW)
             .count();
 
@@ -193,7 +195,7 @@ pub fn recent_activity(entries: &[ActivityEntry], now: DateTime<Utc>) -> Vec<Act
         .collect();
 
     // Most-recent-first.
-    recent.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    recent.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
     recent.truncate(RECENT_ACTIVITY_LIMIT);
     recent
 }
@@ -309,7 +311,7 @@ impl AdminLoginTracker {
     pub fn record_failure(&mut self, username: &str, now: Instant) {
         let history = self.failures.entry(username.to_string()).or_default();
         history.push(now);
-        let horizon = ADMIN_FAILURE_WINDOW + ADMIN_LOCK_DURATION;
+        let horizon = ADMIN_FAILURE_WINDOW.saturating_add(ADMIN_LOCK_DURATION);
         history.retain(|t| now.saturating_duration_since(*t) <= horizon);
     }
 
@@ -429,7 +431,10 @@ pub async fn perform_login(
 ) -> Result<LoginResult, DbError> {
     // A locked-out account is rejected before any password work (Req 5.5).
     let already_locked = {
-        let tracker = state.login_tracker.lock().unwrap();
+        let tracker = state
+            .login_tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         tracker.is_locked(username, now)
     };
     if already_locked {
@@ -458,14 +463,20 @@ pub async fn perform_login(
         None => false,
     };
 
-    if credentials_ok {
-        let admin_id: i64 = row.expect("row present when credentials match").try_get("id")?;
+    if let (true, Some(row)) = (credentials_ok, row.as_ref()) {
+        let admin_id: i64 = row.try_get("id")?;
         {
-            let mut tracker = state.login_tracker.lock().unwrap();
+            let mut tracker = state
+                .login_tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             tracker.record_success(username);
         }
         let token = {
-            let mut sessions = state.sessions.lock().unwrap();
+            let mut sessions = state
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             sessions.create(admin_id, now)
         };
         audit(
@@ -481,7 +492,10 @@ pub async fn perform_login(
 
     // Record the failure and determine whether it just triggered a lockout.
     let now_locked = {
-        let mut tracker = state.login_tracker.lock().unwrap();
+        let mut tracker = state
+            .login_tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         tracker.record_failure(username, now);
         tracker.is_locked(username, now)
     };
@@ -502,7 +516,9 @@ pub async fn perform_login(
             &state.db,
             "admin_login_locked_out",
             None,
-            Some(&format!("account `{username}` locked after repeated failures")),
+            Some(&format!(
+                "account `{username}` locked after repeated failures"
+            )),
             now_utc,
         )
         .await?;
@@ -520,11 +536,16 @@ async fn login_form() -> Html<String> {
 /// `POST /admin/login` — authenticate and, on success, set the session cookie
 /// and redirect to the dashboard (Req 5.1); otherwise re-render the form with
 /// an authentication error (Req 5.4, 5.5).
-async fn login_submit(
-    State(state): State<AdminState>,
-    Form(form): Form<LoginForm>,
-) -> Response {
-    match perform_login(&state, &form.username, &form.password, Instant::now(), Utc::now()).await {
+async fn login_submit(State(state): State<AdminState>, Form(form): Form<LoginForm>) -> Response {
+    match perform_login(
+        &state,
+        &form.username,
+        &form.password,
+        Instant::now(),
+        Utc::now(),
+    )
+    .await
+    {
         Ok(LoginResult::Success { token }) => {
             let mut response = Redirect::to("/admin").into_response();
             if let Ok(cookie) = HeaderValue::from_str(&session_cookie(&token)) {
@@ -546,7 +567,9 @@ async fn login_submit(
             .into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Html(render_login(Some("A server error occurred. Please try again."))),
+            Html(render_login(Some(
+                "A server error occurred. Please try again.",
+            ))),
         )
             .into_response(),
     }
@@ -555,7 +578,11 @@ async fn login_submit(
 /// `POST /admin/logout` — clear the current session and return to login.
 async fn logout(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if let Some(token) = session_token_from_headers(&headers) {
-        state.sessions.lock().unwrap().remove(&token);
+        state
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&token);
     }
     let mut response = Redirect::to("/admin/login").into_response();
     if let Ok(cookie) = HeaderValue::from_str(&clear_cookie()) {
@@ -586,7 +613,10 @@ pub fn authorize(state: &AdminState, headers: &HeaderMap, now: Instant) -> Authz
     let Some(token) = session_token_from_headers(headers) else {
         return Authz::Redirect;
     };
-    let mut sessions = state.sessions.lock().unwrap();
+    let mut sessions = state
+        .sessions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match sessions.validate(&token, now) {
         Some(admin_id) => Authz::Authorized(admin_id),
         None => Authz::Redirect,
@@ -633,7 +663,10 @@ async fn recent_message_activity(
     db: &Db,
     now_utc: DateTime<Utc>,
 ) -> Result<Vec<ActivityEntry>, DbError> {
-    let cutoff = (now_utc - chrono::Duration::hours(24)).to_rfc3339();
+    let cutoff = now_utc
+        .checked_sub_signed(chrono::Duration::hours(24))
+        .unwrap_or(now_utc)
+        .to_rfc3339();
     let mut entries = Vec::new();
 
     let outbound = sqlx::query(
@@ -931,7 +964,7 @@ fn random_token() -> String {
 /// Lowercase hex-encode a byte slice.
 fn to_hex(bytes: &[u8]) -> String {
     use core::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
         let _ = write!(s, "{b:02x}");
     }

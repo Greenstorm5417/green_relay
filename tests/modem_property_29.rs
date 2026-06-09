@@ -7,7 +7,7 @@
 
 use proptest::prelude::*;
 use sms_micro_service::modem::{
-    reconnect_backoff_schedule, reconnect_backoff_secs, RECONNECT_BACKOFF_CAP_SECS,
+    RECONNECT_BACKOFF_CAP_SECS, reconnect_backoff_schedule, reconnect_backoff_secs,
 };
 
 /// Reference implementation of the expected delay for attempt `n` (1-indexed):

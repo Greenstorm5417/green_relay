@@ -13,10 +13,8 @@ use sms_micro_service::config::merge_env_over_file;
 /// environment maps share keys frequently enough to exercise the override
 /// path (env wins) as well as the file-only and env-only paths.
 fn any_key() -> impl Strategy<Value = String> {
-    proptest::sample::select(vec![
-        "A", "B", "C", "D", "E", "F", "G", "H",
-    ])
-    .prop_map(|s| s.to_string())
+    proptest::sample::select(vec!["A", "B", "C", "D", "E", "F", "G", "H"])
+        .prop_map(|s| s.to_string())
 }
 
 /// Generate an arbitrary string value.

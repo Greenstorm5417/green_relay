@@ -23,8 +23,8 @@ use sms_micro_service::db::Db;
 use sms_micro_service::health::{ModemStatusSnapshot, SimStatus};
 use sms_micro_service::models::MessageStatus;
 use sms_micro_service::modem::{
-    handle_inbound, handle_send, initialize, parse_cmti_index, run_session, ModemRequest,
-    SerialTransport, SessionOutcome,
+    ModemRequest, SerialTransport, SessionOutcome, handle_inbound, handle_send, initialize,
+    parse_cmti_index, run_session,
 };
 
 // ---------------------------------------------------------------------------
@@ -77,10 +77,7 @@ impl MockModem {
     fn commands(&self) -> Vec<String> {
         self.writes
             .iter()
-            .map(|w| {
-                w.trim_end_matches(|c| c == '\r' || c == '\n')
-                    .to_string()
-            })
+            .map(|w| w.trim_end_matches(['\r', '\n']).to_string())
             .collect()
     }
 }

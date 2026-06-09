@@ -10,10 +10,10 @@
 //! Covered acceptance criteria:
 //! - Req 5.1  — a successful login establishes an authenticated session.
 //! - Req 5.4  — bad credentials are rejected with an authentication error and
-//!              no session is established.
+//!   no session is established.
 //! - Req 5.6  — an authenticated admin can create, view, and revoke API keys.
 //! - Req 5.10 — a request to a protected view without a valid session is
-//!              redirected to the login view.
+//!   redirected to the login view.
 //!
 //! Session *grant* is verified through HTTP here (login -> cookie -> protected
 //! access succeeds, then logout invalidates the session so the next request is
@@ -22,14 +22,14 @@
 //! (`session_valid`, `SessionStore::validate`, `authorize`), since the HTTP
 //! harness cannot inject a monotonic clock into the handlers.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
 use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
 use chrono::Utc;
-use sms_micro_service::admin::{hash_password, AdminState, ModemStatusProvider, SESSION_COOKIE};
+use sms_micro_service::admin::{AdminState, ModemStatusProvider, SESSION_COOKIE, hash_password};
 use sms_micro_service::db::Db;
 use sms_micro_service::health::{ModemStatusSnapshot, SimStatus};
 use tower::ServiceExt; // for `oneshot`
@@ -233,7 +233,9 @@ async fn login(harness: &Harness, username: &str, password: &str) -> String {
         StatusCode::SEE_OTHER,
         "successful login should redirect"
     );
-    response.session_token().expect("login sets a session cookie")
+    response
+        .session_token()
+        .expect("login sets a session cookie")
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +316,9 @@ async fn logout_invalidates_session_and_blocks_further_access() {
     assert_eq!(before.status, StatusCode::OK);
 
     // Logout terminates the session and clears the cookie.
-    let logout = harness.send(post_with_cookie("/admin/logout", &token)).await;
+    let logout = harness
+        .send(post_with_cookie("/admin/logout", &token))
+        .await;
     assert_eq!(logout.status, StatusCode::SEE_OTHER);
     assert_eq!(logout.location.as_deref(), Some("/admin/login"));
 

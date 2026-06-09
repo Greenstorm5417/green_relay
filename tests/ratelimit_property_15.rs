@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::ratelimit::{decide, RateDecision, WindowState};
+use sms_micro_service::ratelimit::{RateDecision, WindowState, decide};
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]

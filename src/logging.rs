@@ -191,7 +191,10 @@ impl LogRecord {
     /// `timestamp`, `severity`, and `message` keys plus any attached fields.
     pub fn to_json_value(&self) -> Value {
         let mut map = Map::new();
-        map.insert("timestamp".to_string(), Value::String(self.timestamp.clone()));
+        map.insert(
+            "timestamp".to_string(),
+            Value::String(self.timestamp.clone()),
+        );
         map.insert(
             "severity".to_string(),
             Value::String(self.severity.as_str().to_string()),

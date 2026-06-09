@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 use sms_micro_service::auth::{
-    is_locked_out, lockout_until, LOCKOUT_DURATION, LOCKOUT_FAILURE_THRESHOLD, LOCKOUT_WINDOW,
+    LOCKOUT_DURATION, LOCKOUT_FAILURE_THRESHOLD, LOCKOUT_WINDOW, is_locked_out, lockout_until,
 };
 
 /// Window length, in seconds, over which failures are counted (Req 3.8: 60 s).

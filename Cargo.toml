@@ -3,6 +3,9 @@ name = "sms_micro_service"
 version = "0.1.0"
 edition = "2024"
 
+# Library target exposes the crate internals so the integration tests under
+# `tests/` and the benches under `benches/` can drive them; the binary is a
+# thin shell over `run()`.
 [lib]
 name = "sms_micro_service"
 path = "src/lib.rs"
@@ -18,8 +21,10 @@ tower = "0.5.3"
 tokio-serial = "5.4"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono"] }
 argon2 = "0.5.3"
-# Enables the `getrandom` feature on the shared `password-hash`/`rand_core`
-# stack so `OsRng` is available for generating Argon2 salts (Req 5.2).
+# Pinned to password-hash 0.5 to match argon2 0.5.3's own password-hash major:
+# the `getrandom` feature only reaches argon2's salt generator (`OsRng`) when
+# this resolves to the same crate version argon2 depends on. 0.6 needs the
+# unreleased argon2 0.6.0-rc, so it stays on 0.5 until argon2 0.6 is stable.
 password-hash = { version = "0.5", features = ["getrandom"] }
 sha2 = "0.11.0"
 tracing = "0.1.44"
@@ -32,37 +37,35 @@ chrono = { version = "0.4.45", features = ["serde"] }
 proptest = "1.11.0"
 serde_json = "1.0.150"
 chrono = { version = "0.4.45", features = ["serde"] }
-# `ServiceExt::oneshot` (the `util` feature) lets integration tests drive HTTP
-# requests directly against the Axum router without binding a TCP socket.
 tower = { version = "0.5.3", features = ["util"] }
-# Criterion drives the no-admin hot-path benchmarks under `cargo bench`. It runs
-# as an ordinary bench target (no elevated profiler / ETW session required),
-# which is the portable way to profile and validate optimizations on Windows.
-criterion = "0.5"
+criterion = "0.8.2"
 
 [[bench]]
 name = "hotpath"
 harness = false
 
 # `libc` is only needed by the Unix-gated lifecycle integration tests to send
-# `SIGTERM` to the spawned service binary. Scoped to `cfg(unix)` so Windows
-# builds (which gate those tests out) never reference it.
+# `SIGTERM` to the spawned service binary.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 
-# Optimize dependencies even in dev/test builds while leaving our own crate
-# unoptimized for fast incremental compiles and good debug info. Crypto-heavy
-# dependencies (argon2, sha2) and sqlx are dramatically slower when compiled
-# without optimizations, which made the Argon2 property test (`admin_property_19`)
-# take minutes under `cargo test`; building deps at opt-level 3 brings the full
-# test suite back down to seconds without reducing test coverage.
+# `unsafe` is forbidden across the whole package; the panic-source lints
+# (unwrap/expect/panic/...) are denied at the crate level in `src/lib.rs` and
+# `src/main.rs` so they apply only to the shipped library + binary, not to the
+# integration tests and benches (which are allowed to panic).
+[lints.rust]
+unsafe_code = "forbid"
+
+# Build dependencies at opt-level 3 even in dev/test so the crypto-heavy crates
+# (argon2, sha2) and sqlx do not make the property tests run for minutes, while
+# our own crate stays unoptimized for fast incremental builds.
 [profile.dev.package."*"]
 opt-level = 3
 
 [profile.release]
 opt-level = 3
 debug = false
-split-debuginfo = "off" 
+split-debuginfo = "off"
 strip = true
 debug-assertions = false
 overflow-checks = false

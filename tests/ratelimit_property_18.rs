@@ -6,7 +6,7 @@
 
 use proptest::prelude::*;
 use sms_micro_service::ratelimit::{
-    effective_limit, RateLimitConfigError, CUSTOM_LIMIT_MAX, CUSTOM_LIMIT_MIN,
+    CUSTOM_LIMIT_MAX, CUSTOM_LIMIT_MIN, RateLimitConfigError, effective_limit,
 };
 
 proptest! {

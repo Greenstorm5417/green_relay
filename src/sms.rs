@@ -75,10 +75,7 @@ pub fn validate_body(body: &str) -> Result<(), ValidationError> {
 /// `to` and `body` are `Some` when the field was supplied and `None` when it
 /// was omitted. The returned error names exactly the absent fields, in a
 /// stable order (`to` before `body`) (Req 1.6).
-pub fn check_required_fields(
-    to: Option<&str>,
-    body: Option<&str>,
-) -> Result<(), ValidationError> {
+pub fn check_required_fields(to: Option<&str>, body: Option<&str>) -> Result<(), ValidationError> {
     let mut missing = Vec::new();
     if to.is_none() {
         missing.push("to".to_string());
@@ -108,14 +105,26 @@ mod validation_tests {
     #[test]
     fn rejects_invalid_e164_numbers() {
         assert_eq!(validate_e164(""), Err(ValidationError::InvalidPhoneNumber));
-        assert_eq!(validate_e164("14155552671"), Err(ValidationError::InvalidPhoneNumber)); // no '+'
-        assert_eq!(validate_e164("+123456"), Err(ValidationError::InvalidPhoneNumber)); // 6 digits
+        assert_eq!(
+            validate_e164("14155552671"),
+            Err(ValidationError::InvalidPhoneNumber)
+        ); // no '+'
+        assert_eq!(
+            validate_e164("+123456"),
+            Err(ValidationError::InvalidPhoneNumber)
+        ); // 6 digits
         assert_eq!(
             validate_e164("+1234567890123456"),
             Err(ValidationError::InvalidPhoneNumber)
         ); // 16 digits
-        assert_eq!(validate_e164("+1415555267a"), Err(ValidationError::InvalidPhoneNumber)); // letter
-        assert_eq!(validate_e164("+1 4155552671"), Err(ValidationError::InvalidPhoneNumber)); // space
+        assert_eq!(
+            validate_e164("+1415555267a"),
+            Err(ValidationError::InvalidPhoneNumber)
+        ); // letter
+        assert_eq!(
+            validate_e164("+1 4155552671"),
+            Err(ValidationError::InvalidPhoneNumber)
+        ); // space
         assert_eq!(validate_e164("+"), Err(ValidationError::InvalidPhoneNumber)); // no digits
     }
 
@@ -143,7 +152,10 @@ mod validation_tests {
 
     #[test]
     fn names_exactly_the_missing_fields() {
-        assert_eq!(check_required_fields(Some("+14155552671"), Some("hi")), Ok(()));
+        assert_eq!(
+            check_required_fields(Some("+14155552671"), Some("hi")),
+            Ok(())
+        );
         assert_eq!(
             check_required_fields(None, Some("hi")),
             Err(ValidationError::MissingFields(vec!["to".to_string()]))
@@ -249,7 +261,12 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
     // building the `Segment`s directly (no intermediate `Vec<String>` and
     // re-collect). The part count is bounded by the validated body length, so
     // it comfortably fits the `u8` sequence number.
-    let mut segments: Vec<Segment> = Vec::with_capacity(total_septets / MULTI_PART_MAX + 1);
+    let mut segments: Vec<Segment> = Vec::with_capacity(
+        total_septets
+            .checked_div(MULTI_PART_MAX)
+            .unwrap_or(0)
+            .saturating_add(1),
+    );
     let mut current = String::new();
     let mut current_len = 0usize;
 
@@ -258,8 +275,8 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
         // Start a new part if adding this character would overflow the
         // per-part budget. clen is at most 2 and MULTI_PART_MAX is >= 2, so a
         // single character always fits in a fresh part.
-        if current_len + clen > MULTI_PART_MAX {
-            let seq = (segments.len() + 1) as u8;
+        if current_len.saturating_add(clen) > MULTI_PART_MAX {
+            let seq = segments.len().saturating_add(1) as u8;
             segments.push(Segment {
                 seq,
                 text: std::mem::take(&mut current),
@@ -267,10 +284,10 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
             current_len = 0;
         }
         current.push(c);
-        current_len += clen;
+        current_len = current_len.saturating_add(clen);
     }
     if !current.is_empty() {
-        let seq = (segments.len() + 1) as u8;
+        let seq = segments.len().saturating_add(1) as u8;
         segments.push(Segment { seq, text: current });
     }
 
@@ -288,7 +305,7 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
 /// Produces `AT+CMGS="<to>"\r<part>` terminated by the `0x1A` (Ctrl-Z)
 /// control byte that instructs the modem to transmit the message. (Req 1.3)
 pub fn build_cmgs(to: &str, part: &str) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(to.len() + part.len() + 12);
+    let mut payload = Vec::with_capacity(to.len().saturating_add(part.len()).saturating_add(12));
     payload.extend_from_slice(b"AT+CMGS=\"");
     payload.extend_from_slice(to.as_bytes());
     payload.extend_from_slice(b"\"\r");

@@ -7,7 +7,7 @@
 
 use proptest::prelude::*;
 use sms_micro_service::models::MessageStatus;
-use sms_micro_service::modem::{classify_line, parse_send_outcome, AtResult, LineClass};
+use sms_micro_service::modem::{AtResult, LineClass, classify_line, parse_send_outcome};
 
 /// Independent oracle for the terminator classifier, written separately from
 /// the implementation so the property checks the implementation against the

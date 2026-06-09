@@ -47,8 +47,8 @@ use crate::auth::{
 };
 use crate::db::Db;
 use crate::health::{
-    DEFAULT_RETRY_AFTER_SECS, DeliverabilityOutcome, ModemStatusSnapshot, ServiceHealth,
-    SimStatus, deliverability_gate, derive_health,
+    DEFAULT_RETRY_AFTER_SECS, DeliverabilityOutcome, ModemStatusSnapshot, ServiceHealth, SimStatus,
+    deliverability_gate, derive_health,
 };
 use crate::models::MessageStatus;
 use crate::modem::{ModemHandle, SendResult};
@@ -271,13 +271,10 @@ pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
 // ---------------------------------------------------------------------------
 
 /// Context produced by the auth layer for an authorized request and consumed
-/// by the rate-limit layer: the resolved key id, its optional custom rate
-/// limit, and the non-reversible key identifier used for per-key accounting.
+/// by the rate-limit layer: the authorized key's optional custom rate limit
+/// and the non-reversible key identifier used for per-key accounting.
 #[derive(Debug, Clone)]
 struct AuthContext {
-    /// Database id of the authorized key.
-    #[allow(dead_code)]
-    id: ApiKeyId,
     /// The key's custom rate limit, if any (Req 4.6, 4.7).
     custom_rate_limit: Option<u32>,
     /// Non-reversible SHA-256 identifier, used as the rate-limiter key (Req 4.4).
@@ -305,10 +302,10 @@ impl KeyStore for ResolvedStore {
 /// `Authorization: Bearer <key>` header is used. Returns `None` when neither
 /// is present, which the auth flow treats as an absent key (Req 3.2).
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
-    if let Some(value) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
-        if !value.is_empty() {
-            return Some(value.to_string());
-        }
+    if let Some(value) = headers.get("x-api-key").and_then(|v| v.to_str().ok())
+        && !value.is_empty()
+    {
+        return Some(value.to_string());
     }
     if let Some(value) = headers
         .get(header::AUTHORIZATION)
@@ -381,7 +378,11 @@ async fn auth_middleware<M: ModemPort>(
 
     // Pre-lookup guard: empty or over-length keys never reach the store (Req 3.7).
     if !passes_guard(&presented) {
-        emit_auth_audit(&key_identifier(&presented), &AuthOutcome::Unauthorized, timestamp);
+        emit_auth_audit(
+            &key_identifier(&presented),
+            &AuthOutcome::Unauthorized,
+            timestamp,
+        );
         return unauthorized_response();
     }
 
@@ -394,7 +395,10 @@ async fn auth_middleware<M: ModemPort>(
     // business processing (Req 3.8). Checking before the DB lookup also avoids
     // a query for keys that are already locked out.
     {
-        let tracker = state.auth_failures.lock().expect("auth tracker poisoned");
+        let tracker = state
+            .auth_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if tracker.is_locked(&identifier, now) {
             emit_auth_audit(&identifier, &AuthOutcome::LockedOut, timestamp);
             return unauthorized_response();
@@ -419,17 +423,19 @@ async fn auth_middleware<M: ModemPort>(
         id: resolved.map(|(id, _)| id),
     };
     let outcome = {
-        let mut tracker = state.auth_failures.lock().expect("auth tracker poisoned");
+        let mut tracker = state
+            .auth_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         authenticate_identified(&identifier, &store, &mut tracker, now)
     };
 
     emit_auth_audit(&identifier, &outcome, timestamp);
 
     match outcome {
-        AuthOutcome::Authorized(id) => {
+        AuthOutcome::Authorized(_id) => {
             let custom_rate_limit = resolved.and_then(|(_, custom)| custom);
             request.extensions_mut().insert(AuthContext {
-                id,
                 custom_rate_limit,
                 identifier,
             });
@@ -469,7 +475,10 @@ async fn rate_limit_middleware<M: ModemPort>(
     let (limit, _config_err) = effective_limit(ctx.custom_rate_limit, state.default_rate_limit);
 
     let decision = {
-        let mut limiter = state.rate_limiter.lock().expect("rate limiter poisoned");
+        let mut limiter = state
+            .rate_limiter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         limiter.check(&ctx.identifier, limit, state.rate_window, now)
     };
 
@@ -575,16 +584,14 @@ async fn send_handler<M: ModemPort>(
 /// outbound record, and dispatch the send to the Modem Manager on a background
 /// task. Returns the [`SendDecision`] describing the synchronous outcome.
 async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> SendDecision {
-    // 1. Required-field presence (Req 1.6).
-    if let Err(err) = check_required_fields(request.to.as_deref(), request.body.as_deref()) {
+    // 1. Required-field presence (Req 1.6). Bind both fields directly; the
+    //    `else` arm reuses the canonical missing-field error.
+    let (Some(to), Some(body)) = (request.to.as_deref(), request.body.as_deref()) else {
+        let err = check_required_fields(request.to.as_deref(), request.body.as_deref())
+            .err()
+            .unwrap_or(ValidationError::MissingFields(Vec::new()));
         return SendDecision::Invalid(err);
-    }
-    // Safe to unwrap: the presence check above guarantees both are `Some`.
-    let to = request.to.as_deref().expect("to present after field check");
-    let body = request
-        .body
-        .as_deref()
-        .expect("body present after field check");
+    };
 
     // 2. Phone number (Req 1.7) and body length (Req 1.1, 1.10) validation.
     if let Err(err) = validate_e164(to) {
@@ -994,7 +1001,10 @@ mod tests {
 
         let long = "x".repeat(1531);
         let decision = queue_send(&state, &request(Some("+14155552671"), Some(&long))).await;
-        assert_eq!(decision, SendDecision::Invalid(ValidationError::BodyTooLong));
+        assert_eq!(
+            decision,
+            SendDecision::Invalid(ValidationError::BodyTooLong)
+        );
     }
 
     #[tokio::test]

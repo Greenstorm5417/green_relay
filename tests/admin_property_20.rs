@@ -29,10 +29,7 @@ fn oracle_locked(failure_secs: &[u64], now_secs: u64) -> bool {
             .iter()
             .filter(|&&f| f <= trigger && trigger - f <= WINDOW_SECS)
             .count();
-        if count >= ADMIN_MAX_FAILURES
-            && now_secs >= trigger
-            && now_secs - trigger < LOCK_SECS
-        {
+        if count >= ADMIN_MAX_FAILURES && now_secs >= trigger && now_secs - trigger < LOCK_SECS {
             return true;
         }
     }

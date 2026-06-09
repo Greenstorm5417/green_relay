@@ -22,7 +22,7 @@ use proptest::prelude::*;
 
 use sms_micro_service::config::{Config, LogLevel};
 use sms_micro_service::db::Db;
-use sms_micro_service::modem::{new_modem, run_session_with_transport, SerialTransport};
+use sms_micro_service::modem::{SerialTransport, new_modem, run_session_with_transport};
 
 /// Shared, thread-safe tracker of AT-command concurrency on the mock port.
 ///

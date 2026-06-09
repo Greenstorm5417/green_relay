@@ -12,13 +12,13 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 use sms_micro_service::auth::{
-    authenticate, authenticate_identified, build_audit_record, build_audit_record_with_identifier,
-    key_identifier, ApiKeyId, FailureTracker, KeyStore,
+    ApiKeyId, FailureTracker, KeyStore, authenticate, authenticate_identified, build_audit_record,
+    build_audit_record_with_identifier, key_identifier,
 };
-use sms_micro_service::health::{derive_health, ModemStatusSnapshot, SimStatus};
+use sms_micro_service::health::{ModemStatusSnapshot, SimStatus, derive_health};
 use sms_micro_service::modem::parse_send_outcome;
 use sms_micro_service::ratelimit::RateLimiter;
 use sms_micro_service::sms::{segment_message, validate_body, validate_e164};
@@ -86,9 +86,7 @@ fn bench_rate_limiter_check(c: &mut Criterion) {
     let key = key_identifier(SAMPLE_KEY);
     limiter.check(&key, 1_000_000, window, Instant::now());
     c.bench_function("rate_limiter_check_existing_key", |b| {
-        b.iter(|| {
-            black_box(limiter.check(black_box(&key), 1_000_000, window, Instant::now()))
-        })
+        b.iter(|| black_box(limiter.check(black_box(&key), 1_000_000, window, Instant::now())))
     });
 }
 
@@ -96,7 +94,9 @@ fn bench_validation(c: &mut Criterion) {
     c.bench_function("validate_request", |b| {
         b.iter(|| {
             let _ = black_box(validate_e164(black_box("+14155552671")));
-            let _ = black_box(validate_body(black_box("hello world, this is a test message")));
+            let _ = black_box(validate_body(black_box(
+                "hello world, this is a test message",
+            )));
         })
     });
 }

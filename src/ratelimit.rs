@@ -98,12 +98,7 @@ impl std::error::Error for RateLimitConfigError {}
 /// - Otherwise (count at or above `limit`), the request is rejected and the
 ///   count is left unchanged; the returned `retry_after_secs` is bounded to
 ///   `1..=window_secs` (Req 4.2, 4.3).
-pub fn decide(
-    state: &mut WindowState,
-    limit: u32,
-    window: Duration,
-    now: Instant,
-) -> RateDecision {
+pub fn decide(state: &mut WindowState, limit: u32, window: Duration, now: Instant) -> RateDecision {
     let elapsed = now.saturating_duration_since(state.window_start);
 
     // Window elapsed: reset and count this request as the first of the new
@@ -118,9 +113,9 @@ pub fn decide(
 
     if state.count < limit {
         // Under the limit: allow and increment by exactly one.
-        state.count += 1;
+        state.count = state.count.saturating_add(1);
         RateDecision::Allow {
-            remaining: limit - state.count,
+            remaining: limit.saturating_sub(state.count),
         }
     } else {
         // At or over the limit: reject and leave the count unchanged.
@@ -153,10 +148,7 @@ fn retry_after_secs(window: Duration, elapsed: Duration) -> u64 {
 /// `default` limit is used together with a [`RateLimitConfigError`] naming the
 /// offending value (Req 4.7). When `custom` is `None`, the `default` limit is
 /// used with no error.
-pub fn effective_limit(
-    custom: Option<u32>,
-    default: u32,
-) -> (u32, Option<RateLimitConfigError>) {
+pub fn effective_limit(custom: Option<u32>, default: u32) -> (u32, Option<RateLimitConfigError>) {
     match custom {
         Some(c) if (CUSTOM_LIMIT_MIN..=CUSTOM_LIMIT_MAX).contains(&c) => (c, None),
         Some(c) => (default, Some(RateLimitConfigError { configured: c })),
@@ -184,13 +176,7 @@ impl RateLimiter {
 
     /// Make a rate-limit decision for `key`, creating its window state on
     /// first use. The state for any other key is left untouched (Req 4.4).
-    pub fn check(
-        &mut self,
-        key: &str,
-        limit: u32,
-        window: Duration,
-        now: Instant,
-    ) -> RateDecision {
+    pub fn check(&mut self, key: &str, limit: u32, window: Duration, now: Instant) -> RateDecision {
         // Hot path: an already-tracked key is decided in place without
         // allocating a new owned key. Only the first request for a key pays
         // for the `String` allocation that inserts its window state.
@@ -225,11 +211,20 @@ mod tests {
         let window = Duration::from_secs(60);
         let mut state = WindowState::new(now);
 
-        assert_eq!(decide(&mut state, 3, window, now), RateDecision::Allow { remaining: 2 });
+        assert_eq!(
+            decide(&mut state, 3, window, now),
+            RateDecision::Allow { remaining: 2 }
+        );
         assert_eq!(state.count, 1);
-        assert_eq!(decide(&mut state, 3, window, now), RateDecision::Allow { remaining: 1 });
+        assert_eq!(
+            decide(&mut state, 3, window, now),
+            RateDecision::Allow { remaining: 1 }
+        );
         assert_eq!(state.count, 2);
-        assert_eq!(decide(&mut state, 3, window, now), RateDecision::Allow { remaining: 0 });
+        assert_eq!(
+            decide(&mut state, 3, window, now),
+            RateDecision::Allow { remaining: 0 }
+        );
         assert_eq!(state.count, 3);
     }
 

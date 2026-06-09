@@ -5,7 +5,7 @@
 //! `check_required_fields` function of the `sms_micro_service` library.
 
 use proptest::prelude::*;
-use sms_micro_service::sms::{check_required_fields, ValidationError};
+use sms_micro_service::sms::{ValidationError, check_required_fields};
 
 /// Independent oracle: the set of field names that are absent, in the stable
 /// order the implementation is specified to use (`to` before `body`).

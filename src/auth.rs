@@ -102,14 +102,16 @@ pub fn key_identifier(presented_key: &str) -> String {
 /// assembled buffer is valid UTF-8 by construction.
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = Vec::with_capacity(bytes.len() * 2);
+    let mut out = Vec::with_capacity(bytes.len().saturating_mul(2));
     for &b in bytes {
-        out.push(HEX[(b >> 4) as usize]);
-        out.push(HEX[(b & 0x0f) as usize]);
+        // `b >> 4` and `b & 0x0f` are both in `0..=15`, always valid indices.
+        out.push(*HEX.get((b >> 4) as usize).unwrap_or(&b'0'));
+        out.push(*HEX.get((b & 0x0f) as usize).unwrap_or(&b'0'));
     }
-    // SAFETY: every pushed byte is an ASCII hex digit (`0-9a-f`), so `out` is
-    // guaranteed to be valid UTF-8.
-    unsafe { String::from_utf8_unchecked(out) }
+    // Every pushed byte is an ASCII hex digit (`0-9a-f`), so this conversion
+    // always succeeds; the validating `from_utf8` is a cheap ASCII scan and
+    // keeps the function free of `unsafe`.
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// Pre-lookup guard for a presented key.
@@ -120,7 +122,7 @@ fn to_hex(bytes: &[u8]) -> String {
 /// them (Req 3.7).
 pub fn passes_guard(presented: &str) -> bool {
     let len = presented.chars().count();
-    len >= 1 && len <= MAX_KEY_LEN
+    (1..=MAX_KEY_LEN).contains(&len)
 }
 
 /// Compute the instant until which a timeline of failures keeps an identifier
@@ -139,17 +141,18 @@ pub fn lockout_until(failures: &[Instant]) -> Option<Instant> {
     sorted.sort_unstable();
 
     let mut result: Option<Instant> = None;
-    for i in 0..sorted.len() {
-        let anchor = sorted[i];
+    for (i, &anchor) in sorted.iter().enumerate() {
         // Count failures at or before `anchor` that fall within the trailing
         // window. Using saturating_duration_since avoids any Instant
         // underflow and treats out-of-order inputs safely.
-        let count = sorted[..=i]
+        let count = sorted
             .iter()
+            .take(i.saturating_add(1))
             .filter(|t| anchor.saturating_duration_since(**t) <= LOCKOUT_WINDOW)
             .count();
-        if count >= LOCKOUT_FAILURE_THRESHOLD {
-            let until = anchor + LOCKOUT_DURATION;
+        if count >= LOCKOUT_FAILURE_THRESHOLD
+            && let Some(until) = anchor.checked_add(LOCKOUT_DURATION)
+        {
             result = Some(result.map_or(until, |r| r.max(until)));
         }
     }
@@ -201,7 +204,7 @@ impl FailureTracker {
         // A failure can only matter while it could still anchor a window whose
         // lockout has not expired. Anything older than window + lockout
         // relative to `now` is irrelevant and can be dropped.
-        let horizon = LOCKOUT_WINDOW + LOCKOUT_DURATION;
+        let horizon = LOCKOUT_WINDOW.saturating_add(LOCKOUT_DURATION);
         history.retain(|t| now.saturating_duration_since(*t) <= horizon);
     }
 

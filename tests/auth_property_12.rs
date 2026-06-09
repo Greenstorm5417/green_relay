@@ -17,10 +17,8 @@ use chrono::{TimeZone, Utc};
 use proptest::prelude::*;
 use serde_json::Value;
 
-use sms_micro_service::auth::{
-    build_audit_record, key_identifier, ApiKeyId, AuthOutcome,
-};
-use sms_micro_service::logging::{auth_event_log, redact_credentials, REDACTED};
+use sms_micro_service::auth::{ApiKeyId, AuthOutcome, build_audit_record, key_identifier};
+use sms_micro_service::logging::{REDACTED, auth_event_log, redact_credentials};
 
 /// Generate a realistic credential string (an API key or a password).
 ///
@@ -43,7 +41,7 @@ fn credential_strategy() -> impl Strategy<Value = String> {
         .prop_map(|(a, m, b)| format!("{a}{m}{b}"))
         .prop_filter("credential length within 1..=256 chars", |s| {
             let n = s.chars().count();
-            n >= 1 && n <= 256
+            (1..=256).contains(&n)
         })
 }
 
