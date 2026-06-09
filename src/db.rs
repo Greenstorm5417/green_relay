@@ -26,9 +26,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+};
 use sqlx::{Acquire, Row, SqlitePool};
 
 use crate::models::{InboundMessage, MessageStatus, OutboundMessage};
@@ -172,9 +175,20 @@ impl Db {
     /// it does not yet exist. The schema-ready gate starts closed; call
     /// [`Db::run_migrations`] before serving requests.
     pub async fn connect(database_path: &str) -> Result<Db, DbError> {
+        // WAL journaling makes commits sequential appends to a single WAL file
+        // rather than create/fsync/delete of a per-transaction rollback
+        // journal, which is the dominant cost on the write path (queued-send
+        // insert, status updates). `synchronous = FULL` is retained so a
+        // committed write survives OS/power loss before the request returns
+        // (Req 6.4); `busy_timeout` lets a brief writer contention retry
+        // instead of failing with "database is locked".
         let options = SqliteConnectOptions::new()
             .filename(database_path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Full)
+            .busy_timeout(Duration::from_secs(5))
+            .foreign_keys(true);
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
         Ok(Db {
             pool,

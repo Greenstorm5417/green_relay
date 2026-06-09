@@ -44,6 +44,10 @@ criterion = "0.8.2"
 name = "hotpath"
 harness = false
 
+[[bench]]
+name = "fullflow"
+harness = false
+
 # `libc` is only needed by the Unix-gated lifecycle integration tests to send
 # `SIGTERM` to the spawned service binary.
 [target.'cfg(unix)'.dev-dependencies]
