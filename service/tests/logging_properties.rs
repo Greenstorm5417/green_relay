@@ -2,10 +2,10 @@
 //!
 //! These tests live in their own integration-test crate (separate from
 //! `src/logging.rs`) per the spec's test-placement note, and exercise the
-//! public `LogRecord` API of the `sms_micro_service` library.
+//! public `LogRecord` API of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::logging::{LogRecord, Severity};
+use green_relay::logging::{LogRecord, Severity};
 
 /// The canonical set of severity strings allowed by Req 7.1.
 const ALLOWED_SEVERITIES: [&str; 5] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];

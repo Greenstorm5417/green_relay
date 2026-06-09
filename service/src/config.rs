@@ -1,45 +1,50 @@
-//! Configuration loader.
-//!
-//! Loads configuration from a YAML file and environment variables, with
-//! environment values overriding file values (Req 11.1). Required values are
-//! validated at startup; on a missing or invalid value `load` returns a
-//! [`ConfigError`] that names the specific offending key (Req 11.5).
-//!
-//! The module separates three concerns so they can be tested in isolation:
-//! - [`merge_env_over_file`] — a pure merge of a file-sourced map and an
-//!   environment-sourced map (env wins). Validated by Property 31.
-//! - [`Config::from_map`] — pure validation/typing of a merged string map
-//!   into a [`Config`], producing key-named errors. Validated by unit tests.
-//! - [`load`] — the impure wiring that reads the file + process environment
-//!   and feeds them through the two pure functions above.
-
 use std::collections::HashMap;
-use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-/// Environment variable / config-file key names.
+/// The environment variable or configuration key for the listening address.
 pub const KEY_LISTEN_ADDR: &str = "LISTEN_ADDR";
+
+/// The environment variable or configuration key for the serial port.
 pub const KEY_SERIAL_PORT: &str = "SERIAL_PORT";
+
+/// The environment variable or configuration key for the baud rate.
 pub const KEY_BAUD_RATE: &str = "BAUD_RATE";
+
+/// The environment variable or configuration key for the database path.
 pub const KEY_DATABASE_PATH: &str = "DATABASE_PATH";
+
+/// The environment variable or configuration key for the service center number.
 pub const KEY_SERVICE_CENTER_NUMBER: &str = "SERVICE_CENTER_NUMBER";
+
+/// The environment variable or configuration key for the AT command timeout.
 pub const KEY_AT_TIMEOUT_SECS: &str = "AT_TIMEOUT_SECS";
+
+/// The environment variable or configuration key for the default rate limit.
 pub const KEY_DEFAULT_RATE_LIMIT: &str = "DEFAULT_RATE_LIMIT";
+
+/// The environment variable or configuration key for the rate limiting window.
 pub const KEY_RATE_WINDOW_SECS: &str = "RATE_WINDOW_SECS";
+
+/// The environment variable or configuration key for the logging level.
 pub const KEY_LOG_LEVEL: &str = "LOG_LEVEL";
+
+/// The environment variable or configuration key for the maximum serial port reopen attempts.
 pub const KEY_REOPEN_MAX_ATTEMPTS: &str = "REOPEN_MAX_ATTEMPTS";
+
+/// The environment variable or configuration key for the maximum message send attempts.
 pub const KEY_SEND_MAX_ATTEMPTS: &str = "SEND_MAX_ATTEMPTS";
+
+/// The environment variable or configuration key for the message send retry delay.
 pub const KEY_SEND_RETRY_DELAY_SECS: &str = "SEND_RETRY_DELAY_SECS";
 
-/// The environment variable naming the path to the configuration file.
+/// The environment variable specifying the path to the configuration file.
 pub const KEY_CONFIG_FILE: &str = "SMS_CONFIG_FILE";
 
-/// Default configuration file name. When [`KEY_CONFIG_FILE`] is unset the
-/// loader looks for this file next to the running executable.
+/// The default filename for the YAML configuration file.
 pub const DEFAULT_CONFIG_FILENAME: &str = "config.yaml";
 
-/// All configuration keys the loader recognizes from the environment.
+/// A list of all configuration keys recognized by the application.
 pub const KNOWN_KEYS: &[&str] = &[
     KEY_LISTEN_ADDR,
     KEY_SERIAL_PORT,
@@ -55,23 +60,29 @@ pub const KNOWN_KEYS: &[&str] = &[
     KEY_SEND_RETRY_DELAY_SECS,
 ];
 
-/// Minimum emitted log severity level.
-///
-/// Defined here because it is part of the validated [`Config`]; the logging
-/// module consumes it when initializing the subscriber.
+/// Represents the log verbosity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogLevel {
+    /// Verbose developer tracing.
     Trace,
+    
+    /// Diagnostic information.
     Debug,
+    
+    /// General application info.
     #[default]
     Info,
+    
+    /// Warning messages.
     Warn,
+    
+    /// Critical errors.
     Error,
 }
 
 impl LogLevel {
-    /// Parse a severity name case-insensitively. Returns `None` for any value
-    /// that is not exactly one of the five supported levels.
+    
+    /// Parses a string slice into a LogLevel.
     pub fn parse(s: &str) -> Option<LogLevel> {
         match s.trim().to_ascii_uppercase().as_str() {
             "TRACE" => Some(LogLevel::Trace),
@@ -83,7 +94,7 @@ impl LogLevel {
         }
     }
 
-    /// The canonical uppercase name of this level.
+    /// Returns the static string representation of the log level.
     pub fn as_str(&self) -> &'static str {
         match self {
             LogLevel::Trace => "TRACE",
@@ -95,77 +106,49 @@ impl LogLevel {
     }
 }
 
-/// Fully validated service configuration. See `design.md` §1.
+/// Holds all configuration parameters for the service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// The socket address to listen on.
     pub listen_addr: SocketAddr,
+    
+    /// The path to the cellular modem's serial port.
     pub serial_port: String,
+    
+    /// The baud rate for the serial port communication.
     pub baud_rate: u32,
+    
+    /// The path to the SQLite database.
     pub database_path: String,
+    
+    /// The SMS service center number (SMSC), if explicitly configured.
     pub service_center_number: Option<String>,
+    
+    /// The cellular modem AT command timeout in seconds.
     pub at_timeout_secs: u64,
+    
+    /// The default API key rate limit (requests per window).
     pub default_rate_limit: u32,
+    
+    /// The rate limiting time window in seconds.
     pub rate_window_secs: u64,
+    
+    /// The configured logging level.
     pub log_level: LogLevel,
+    
+    /// The maximum attempts to reopen a closed serial port.
     pub reopen_max_attempts: u32,
+    
+    /// The maximum attempts to send an outbound message.
     pub send_max_attempts: u32,
+    
+    /// The delay in seconds between message send retries.
     pub send_retry_delay_secs: u64,
 }
 
-/// An error produced while loading or validating configuration. Every variant
-/// carries the specific offending key so startup can report it (Req 11.5).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigError {
-    /// A required key was absent or empty.
-    MissingKey(String),
-    /// A key was present but its value could not be parsed or was out of range.
-    InvalidValue {
-        key: String,
-        value: String,
-        reason: String,
-    },
-    /// The configuration file existed but could not be read or parsed.
-    FileRead { path: String, reason: String },
-}
+pub use crate::error::ConfigError;
 
-impl ConfigError {
-    /// The configuration key this error concerns, when applicable.
-    pub fn key(&self) -> Option<&str> {
-        match self {
-            ConfigError::MissingKey(k) => Some(k),
-            ConfigError::InvalidValue { key, .. } => Some(key),
-            ConfigError::FileRead { .. } => None,
-        }
-    }
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ConfigError::MissingKey(key) => {
-                write!(f, "missing required configuration value: {key}")
-            }
-            ConfigError::InvalidValue { key, value, reason } => {
-                write!(
-                    f,
-                    "invalid configuration value for {key} (`{value}`): {reason}"
-                )
-            }
-            ConfigError::FileRead { path, reason } => {
-                write!(f, "failed to read configuration file {path}: {reason}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
-/// Merge a file-sourced configuration map with an environment-sourced map,
-/// letting the environment win on conflicts (Req 11.1).
-///
-/// The result contains the union of keys from both maps. For any key present
-/// in `env`, the merged value is the environment value; otherwise it is the
-/// file value. This is a pure function with no I/O — see Property 31.
+/// Merges environment variables over values defined in a file.
 pub fn merge_env_over_file(
     file: &HashMap<String, String>,
     env: &HashMap<String, String>,
@@ -177,14 +160,7 @@ pub fn merge_env_over_file(
     merged
 }
 
-/// Parse the contents of a YAML configuration file into a flat key/value map.
-///
-/// The file must be a single top-level YAML mapping whose values are scalars
-/// (strings, numbers, or booleans); each value is normalized to its string
-/// form so it flows through the same validation path as environment variables.
-/// An empty file (or an explicit `null`) yields an empty map, and a key whose
-/// value is `null` is treated as unset. Nested mappings or sequences are
-/// rejected with a descriptive reason.
+/// Parses the contents of a YAML configuration file.
 pub fn parse_config_file(contents: &str) -> Result<HashMap<String, String>, String> {
     let value: serde_yaml::Value = serde_yaml::from_str(contents).map_err(|e| e.to_string())?;
 
@@ -200,7 +176,7 @@ pub fn parse_config_file(contents: &str) -> Result<HashMap<String, String>, Stri
                     Some(text) => {
                         map.insert(key, text);
                     }
-                    // A null value means the key was written but left unset.
+                    
                     None if val.is_null() => {}
                     None => {
                         return Err(format!(
@@ -215,7 +191,6 @@ pub fn parse_config_file(contents: &str) -> Result<HashMap<String, String>, Stri
     }
 }
 
-/// Normalize a scalar YAML value to its string form, or `None` if non-scalar.
 fn scalar_to_string(value: &serde_yaml::Value) -> Option<String> {
     match value {
         serde_yaml::Value::String(s) => Some(s.clone()),
@@ -226,13 +201,8 @@ fn scalar_to_string(value: &serde_yaml::Value) -> Option<String> {
 }
 
 impl Config {
-    /// Build and validate a [`Config`] from an already-merged string map.
-    ///
-    /// Pure: performs no I/O. Required keys that are absent yield
-    /// [`ConfigError::MissingKey`]; present-but-unparseable or out-of-range
-    /// values yield [`ConfigError::InvalidValue`]. Either way the offending
-    /// key is named (Req 11.5). Optional keys fall back to their documented
-    /// defaults when absent or empty.
+    
+    /// Parses configuration fields from a map of string values.
     pub fn from_map(map: &HashMap<String, String>) -> Result<Config, ConfigError> {
         let listen_addr_raw = require(map, KEY_LISTEN_ADDR)?;
         let listen_addr =
@@ -327,7 +297,6 @@ impl Config {
     }
 }
 
-/// Fetch a required, non-empty value or produce [`ConfigError::MissingKey`].
 fn require<'a>(map: &'a HashMap<String, String>, key: &str) -> Result<&'a str, ConfigError> {
     match map.get(key) {
         Some(v) if !v.trim().is_empty() => Ok(v.as_str()),
@@ -335,7 +304,6 @@ fn require<'a>(map: &'a HashMap<String, String>, key: &str) -> Result<&'a str, C
     }
 }
 
-/// Fetch an optional string value, treating absent or empty as `None`.
 fn optional_string(map: &HashMap<String, String>, key: &str) -> Option<String> {
     map.get(key)
         .map(|v| v.trim())
@@ -343,7 +311,6 @@ fn optional_string(map: &HashMap<String, String>, key: &str) -> Option<String> {
         .map(|v| v.to_string())
 }
 
-/// Parse a `u32` value, falling back to `default` when absent or empty.
 fn parse_u32_or_default(
     map: &HashMap<String, String>,
     key: &str,
@@ -359,7 +326,6 @@ fn parse_u32_or_default(
     }
 }
 
-/// Parse a `u64` value, falling back to `default` when absent or empty.
 fn parse_u64_or_default(
     map: &HashMap<String, String>,
     key: &str,
@@ -375,7 +341,6 @@ fn parse_u64_or_default(
     }
 }
 
-/// Build an [`ConfigError::InvalidValue`] for an out-of-range numeric value.
 fn out_of_range(map: &HashMap<String, String>, key: &str, reason: &str) -> ConfigError {
     ConfigError::InvalidValue {
         key: key.to_string(),
@@ -384,7 +349,6 @@ fn out_of_range(map: &HashMap<String, String>, key: &str, reason: &str) -> Confi
     }
 }
 
-/// Collect the recognized configuration keys from the process environment.
 fn env_map() -> HashMap<String, String> {
     let mut map = HashMap::new();
     for key in KNOWN_KEYS {
@@ -395,9 +359,6 @@ fn env_map() -> HashMap<String, String> {
     map
 }
 
-/// Resolve the default configuration file path: `config.yaml` beside the
-/// running executable, falling back to the bare filename in the working
-/// directory if the executable path cannot be determined.
 fn default_config_path() -> String {
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
@@ -410,13 +371,6 @@ fn default_config_path() -> String {
     DEFAULT_CONFIG_FILENAME.to_string()
 }
 
-/// Read the configuration file referenced by [`KEY_CONFIG_FILE`] (or the
-/// default path) into a key/value map.
-///
-/// A missing file at the default path is treated as an empty map, since the
-/// environment alone may supply all required values. If the path was set
-/// explicitly via [`KEY_CONFIG_FILE`] but cannot be read, that is reported as
-/// a [`ConfigError::FileRead`].
 fn file_map() -> Result<HashMap<String, String>, ConfigError> {
     let explicit = std::env::var(KEY_CONFIG_FILE).ok();
     let path = explicit.clone().unwrap_or_else(default_config_path);
@@ -438,9 +392,7 @@ fn file_map() -> Result<HashMap<String, String>, ConfigError> {
     }
 }
 
-/// Load configuration from the config file and process environment, with
-/// environment values overriding file values, then validate it (Req 11.1,
-/// 11.5).
+/// Loads configuration from files and the environment.
 pub fn load() -> Result<Config, ConfigError> {
     let file = file_map()?;
     let env = env_map();
@@ -669,8 +621,7 @@ mod tests {
 
     #[test]
     fn yaml_empty_file_is_empty_map() {
-        // An empty config file must parse to an empty map so the environment
-        // can supply every value (relied on by the lifecycle integration test).
+        
         assert!(parse_config_file("").expect("empty parses").is_empty());
         assert!(
             parse_config_file("# only a comment\n")
@@ -692,14 +643,13 @@ SERVICE_CENTER_NUMBER: \"+14155550000\"
             map.get(KEY_LISTEN_ADDR).map(String::as_str),
             Some("0.0.0.0:8080")
         );
-        // Numbers are normalized to their string form for uniform validation.
+        
         assert_eq!(map.get(KEY_BAUD_RATE).map(String::as_str), Some("115200"));
         assert_eq!(
             map.get(KEY_SEND_RETRY_DELAY_SECS).map(String::as_str),
             Some("5")
         );
 
-        // The parsed map flows through the same validation as the environment.
         let mut full = map.clone();
         full.insert(KEY_DATABASE_PATH.to_string(), "./sms.db".to_string());
         let config = Config::from_map(&full).expect("yaml-sourced config validates");
@@ -726,7 +676,7 @@ LISTEN_ADDR:
 
     #[test]
     fn yaml_non_mapping_is_rejected() {
-        // A top-level sequence is not a key/value configuration.
+        
         parse_config_file("- one\n- two\n").expect_err("sequence must be rejected");
     }
 }

@@ -3,11 +3,11 @@
 //! This test lives in its own integration-test crate (separate from
 //! `src/modem.rs`) per the spec's test-placement note, and exercises the
 //! public `format_cmgs_response`, `parse_cmgs_reference`, and
-//! `parse_send_outcome` functions of the `sms_micro_service` library.
+//! `parse_send_outcome` functions of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::models::MessageStatus;
-use sms_micro_service::modem::{format_cmgs_response, parse_cmgs_reference, parse_send_outcome};
+use green_relay::models::MessageStatus;
+use green_relay::modem::{format_cmgs_response, parse_cmgs_reference, parse_send_outcome};
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]

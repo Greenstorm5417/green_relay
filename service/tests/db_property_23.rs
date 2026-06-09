@@ -2,7 +2,7 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/db.rs`) per the spec's test-placement note, and exercises the public
-//! persistence API of the `sms_micro_service` library against an in-memory
+//! persistence API of the `green_relay` library against an in-memory
 //! SQLite database.
 //!
 //! Validates: Requirements 6.4
@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, TimeZone, Utc};
 use proptest::prelude::*;
-use sms_micro_service::db::Db;
-use sms_micro_service::models::MessageStatus;
+use green_relay::db::Db;
+use green_relay::models::MessageStatus;
 
 /// Monotonic counter giving every database a unique on-disk filename so
 /// concurrent or repeated cases never share state.

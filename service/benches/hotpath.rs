@@ -14,14 +14,14 @@ use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use sms_micro_service::auth::{
+use green_relay::auth::{
     ApiKeyId, FailureTracker, KeyStore, authenticate, authenticate_identified, build_audit_record,
     build_audit_record_with_identifier, key_identifier,
 };
-use sms_micro_service::health::{ModemStatusSnapshot, SimStatus, derive_health};
-use sms_micro_service::modem::parse_send_outcome;
-use sms_micro_service::ratelimit::RateLimiter;
-use sms_micro_service::sms::{segment_message, validate_body, validate_e164};
+use green_relay::health::{ModemStatusSnapshot, SimStatus, derive_health};
+use green_relay::modem::parse_send_outcome;
+use green_relay::ratelimit::RateLimiter;
+use green_relay::sms::{segment_message, validate_body, validate_e164};
 
 /// A trivial key store that always resolves the same active key id, mirroring
 /// the "valid key" hot path through the auth middleware.

@@ -13,7 +13,7 @@
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use proptest::prelude::*;
-use sms_micro_service::admin::{ActivityEntry, RECENT_ACTIVITY_LIMIT, recent_activity};
+use green_relay::admin::{ActivityEntry, RECENT_ACTIVITY_LIMIT, recent_activity};
 
 /// A fixed reference "now" used as the selection cutoff. Using a fixed instant
 /// (rather than the wall clock) keeps cases deterministic and reproducible.

@@ -2,7 +2,7 @@
 //!
 //! These tests live in their own integration-test crate (separate from
 //! `src/db.rs`) per the spec's test-placement note and exercise the *public*
-//! persistence API of the `sms_micro_service` library against real SQLite
+//! persistence API of the `green_relay` library against real SQLite
 //! databases. They cover the database lifecycle described in `design.md` §9:
 //!
 //! - schema creation on a fresh database (Req 6.2) and the smoke check that all
@@ -27,8 +27,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Utc;
-use sms_micro_service::db::{Db, DbError};
-use sms_micro_service::models::MessageStatus;
+use green_relay::db::{Db, DbError};
+use green_relay::models::MessageStatus;
 
 /// Monotonic counter giving every database a unique on-disk filename so
 /// repeated or concurrent tests never share state.

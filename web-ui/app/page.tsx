@@ -1,65 +1,152 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useState } from "react";
+
+import { AppShell } from "@/components/AppShell";
+import { Card } from "@/components/Card";
+import { HealthBadge } from "@/components/HealthBadge";
+import { api } from "@/lib/api";
+import { useRequireAuth } from "@/lib/useRequireAuth";
+import type { DashboardData, ModemStatus } from "@/lib/types";
+
+const SIM_LABELS: Record<ModemStatus["simStatus"], string> = {
+  ready: "Ready",
+  not_ready: "Not ready",
+  unknown: "Unknown",
+};
+
+function formatTimestamp(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
+function StatusRow({ label, ok, text }: { label: string; ok: boolean; text: string }) {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="flex items-center justify-between py-2">
+      <span className="text-sm text-gray-600">{label}</span>
+      <span className="flex items-center gap-2 text-sm font-medium text-gray-900">
+        <span
+          className={`size-2 rounded-full ${ok ? "bg-emerald-500" : "bg-red-500"}`}
+          aria-hidden
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+        {text}
+      </span>
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  const auth = useRequireAuth();
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (auth !== "authenticated") return;
+    let active = true;
+
+    function load() {
+      api
+        .dashboard()
+        .then((d) => {
+          if (active) {
+            setData(d);
+            setError(null);
+          }
+        })
+        .catch((err) => {
+          if (active) setError(err instanceof Error ? err.message : "Failed to load.");
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    }
+
+    load();
+    // Refresh the live status periodically.
+    const timer = setInterval(load, 15_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [auth]);
+
+  if (auth !== "authenticated") return null;
+
+  return (
+    <AppShell>
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-xl font-semibold text-gray-900">Dashboard</h1>
+        {data && <HealthBadge health={data.health} />}
+      </div>
+
+      {loading && <p className="text-sm text-gray-500">Loading…</p>}
+
+      {error && !data && (
+        <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-600/20">
+          {error}
+        </div>
+      )}
+
+      {data && (
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card title="Modem status">
+            <div className="divide-y divide-gray-100">
+              <StatusRow
+                label="Serial connection"
+                ok={data.modem.serialConnected}
+                text={data.modem.serialConnected ? "Connected" : "Disconnected"}
+              />
+              <StatusRow
+                label="SIM"
+                ok={data.modem.simStatus === "ready"}
+                text={SIM_LABELS[data.modem.simStatus]}
+              />
+              <StatusRow
+                label="Network registration"
+                ok={data.modem.registered}
+                text={data.modem.registered ? "Registered" : "Not registered"}
+              />
+              <StatusRow
+                label="Responsive"
+                ok={data.modem.responsive}
+                text={data.modem.responsive ? "Yes" : "No"}
+              />
+              <div className="flex items-center justify-between py-2">
+                <span className="text-sm text-gray-600">Signal</span>
+                <span className="text-sm font-medium text-gray-900">
+                  {data.modem.signalPercent === null
+                    ? "—"
+                    : `${data.modem.signalPercent}%`}
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <span className="text-sm text-gray-600">Operator</span>
+                <span className="text-sm font-medium text-gray-900">
+                  {data.modem.operator ?? "—"}
+                </span>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Recent activity">
+            {data.activity.length === 0 ? (
+              <p className="text-sm text-gray-500">No activity in the last 24 hours.</p>
+            ) : (
+              <ul className="divide-y divide-gray-100">
+                {data.activity.map((entry, i) => (
+                  <li key={`${entry.timestamp}-${i}`} className="py-2.5">
+                    <p className="text-sm text-gray-900">{entry.description}</p>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      {formatTimestamp(entry.timestamp)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </div>
+      )}
+    </AppShell>
   );
 }

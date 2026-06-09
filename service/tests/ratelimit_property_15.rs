@@ -2,12 +2,12 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/ratelimit.rs`) per the spec's test-placement note, and exercises the
-//! pure `decide` transition function of the `sms_micro_service` library.
+//! pure `decide` transition function of the `green_relay` library.
 
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::ratelimit::{RateDecision, WindowState, decide};
+use green_relay::ratelimit::{RateDecision, WindowState, decide};
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]

@@ -1,7 +1,7 @@
 //! Process-lifecycle integration tests (task 14.2).
 //!
 //! These are *out-of-process* tests: they spawn the compiled service binary
-//! (`env!("CARGO_BIN_EXE_sms_micro_service")`) with a controlled environment,
+//! (`env!("CARGO_BIN_EXE_green_relay")`) with a controlled environment,
 //! capture its stdout/stderr, and assert on the real process behavior wired up
 //! in `src/lib.rs::run` and `src/main.rs`.
 //!
@@ -24,7 +24,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Absolute path to the freshly built service binary, provided by Cargo.
-const BIN: &str = env!("CARGO_BIN_EXE_sms_micro_service");
+const BIN: &str = env!("CARGO_BIN_EXE_green_relay");
 
 /// A serial port path that does not exist on any test host. The Modem Manager
 /// tolerates an open failure and retries with backoff, so startup still

@@ -11,7 +11,7 @@
 //! and exercises the public API only.
 
 use proptest::prelude::*;
-use sms_micro_service::logging::{LogRecord, Severity};
+use green_relay::logging::{LogRecord, Severity};
 
 /// Canonical rank of a severity per Req 7.1 ordering
 /// `TRACE < DEBUG < INFO < WARN < ERROR`. This is an *independent* oracle: it

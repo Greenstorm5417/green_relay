@@ -2,7 +2,7 @@
 //!
 //! Where `hotpath.rs` measures individual latency-sensitive functions in
 //! isolation, this benchmark drives the *fully assembled* Axum router built by
-//! [`sms_micro_service::api::router`] through `tower`'s
+//! [`green_relay::api::router`] through `tower`'s
 //! [`ServiceExt::oneshot`], so every layer a real request crosses is included:
 //! API-key authentication (with the SQLite key lookup), the per-key rate-limit
 //! layer, request validation, SMS segmentation, the `queued` outbound DB
@@ -26,12 +26,12 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 use tower::util::ServiceExt; // for `oneshot`
 
-use sms_micro_service::api::{ApiState, ModemPort, router};
-use sms_micro_service::auth::key_identifier;
-use sms_micro_service::db::Db;
-use sms_micro_service::health::{ModemStatusSnapshot, SimStatus};
-use sms_micro_service::models::MessageStatus;
-use sms_micro_service::modem::SendResult;
+use green_relay::api::{ApiState, ModemPort, router};
+use green_relay::auth::key_identifier;
+use green_relay::db::Db;
+use green_relay::health::{ModemStatusSnapshot, SimStatus};
+use green_relay::models::MessageStatus;
+use green_relay::modem::SendResult;
 
 // ---------------------------------------------------------------------------
 // Stub modem (no hardware)

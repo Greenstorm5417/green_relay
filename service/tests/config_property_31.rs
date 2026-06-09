@@ -2,12 +2,12 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/config.rs`) per the spec's test-placement note, and exercises the
-//! public `merge_env_over_file` function of the `sms_micro_service` library.
+//! public `merge_env_over_file` function of the `green_relay` library.
 
 use std::collections::HashMap;
 
 use proptest::prelude::*;
-use sms_micro_service::config::merge_env_over_file;
+use green_relay::config::merge_env_over_file;
 
 /// Generate a small key from a constrained alphabet so that the file and
 /// environment maps share keys frequently enough to exercise the override

@@ -12,7 +12,7 @@
 //! and exercises the public API only.
 
 use proptest::prelude::*;
-use sms_micro_service::logging::{at_exchange_log, request_log};
+use green_relay::logging::{at_exchange_log, request_log};
 
 /// Generate a non-empty, arbitrary HTTP-method-like token. Real methods are
 /// short uppercase words, but the builder must faithfully carry whatever it is

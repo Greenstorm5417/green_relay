@@ -29,9 +29,9 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use chrono::Utc;
-use sms_micro_service::admin::{AdminState, ModemStatusProvider, SESSION_COOKIE, hash_password};
-use sms_micro_service::db::Db;
-use sms_micro_service::health::{ModemStatusSnapshot, SimStatus};
+use green_relay::admin::{AdminState, ModemStatusProvider, SESSION_COOKIE, hash_password};
+use green_relay::db::Db;
+use green_relay::health::{ModemStatusSnapshot, SimStatus};
 use tower::ServiceExt; // for `oneshot`
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ impl Harness {
             .await
             .expect("initialize temp database");
         let state = AdminState::new(db.clone(), Arc::new(StubModem));
-        let router = sms_micro_service::admin::router(state);
+        let router = green_relay::admin::router(state);
         Harness {
             router,
             db,

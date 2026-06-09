@@ -2,13 +2,13 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/ratelimit.rs`) per the spec's test-placement note, and exercises the
-//! public `decide` function of the `sms_micro_service` library through its
+//! public `decide` function of the `green_relay` library through its
 //! `ratelimit` module.
 
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::ratelimit::{RateDecision, WindowState, decide};
+use green_relay::ratelimit::{RateDecision, WindowState, decide};
 
 /// Generate a window length in whole seconds within a realistic range. The
 /// window is always at least 1 second so the upper bound on `Retry-After`

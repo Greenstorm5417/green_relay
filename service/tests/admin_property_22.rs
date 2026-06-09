@@ -2,12 +2,12 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/admin.rs`) per the spec's test-placement note, and exercises the
-//! public `session_valid` function of the `sms_micro_service` library.
+//! public `session_valid` function of the `green_relay` library.
 
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::admin::{SESSION_IDLE_TIMEOUT, Session, session_valid};
+use green_relay::admin::{SESSION_IDLE_TIMEOUT, Session, session_valid};
 
 /// The idle timeout, in milliseconds, used as the validity boundary.
 const TIMEOUT_MS: u64 = SESSION_IDLE_TIMEOUT.as_millis() as u64;

@@ -3,10 +3,10 @@
 //! This test lives in its own integration-test crate (separate from
 //! `src/modem.rs`) per the spec's test-placement note, and exercises the
 //! public `format_cmgr_response` / `parse_cmgr` pair of the
-//! `sms_micro_service` library.
+//! `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::modem::{ParsedInbound, format_cmgr_response, parse_cmgr};
+use green_relay::modem::{ParsedInbound, format_cmgr_response, parse_cmgr};
 
 /// Independent oracle mirroring the modem's terminating-result-code grammar.
 ///

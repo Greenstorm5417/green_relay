@@ -1,8 +1,6 @@
-//! Modem Manager: AT command processor and SMS handler.
 
 pub const RECONNECT_BACKOFF_CAP_SECS: u64 = 60;
 
-/// Reconnect backoff delay for attempt n: min(2^(n-1), 60) seconds.
 pub fn reconnect_backoff_secs(attempt: u32) -> u64 {
     let exponent = attempt.saturating_sub(1);
 
@@ -14,14 +12,12 @@ pub fn reconnect_backoff_secs(attempt: u32) -> u64 {
     delay.min(RECONNECT_BACKOFF_CAP_SECS)
 }
 
-/// Build reconnect backoff schedule for max_attempts.
 pub fn reconnect_backoff_schedule(max_attempts: u32) -> Vec<u64> {
     (1..=max_attempts).map(reconnect_backoff_secs).collect()
 }
 
 use crate::models::MessageStatus;
 
-/// Result code from AT command exchange.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtResult {
     Ok,
@@ -32,12 +28,11 @@ pub enum AtResult {
 }
 
 impl AtResult {
-    /// True if OK result.
+    
     pub fn is_ok(&self) -> bool {
         matches!(self, AtResult::Ok)
     }
 
-    /// Error code if present.
     pub fn error_code(&self) -> Option<u16> {
         match self {
             AtResult::CmsError(code) | AtResult::CmeError(code) => Some(*code),
@@ -46,14 +41,12 @@ impl AtResult {
     }
 }
 
-/// Modem response line classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineClass {
     Terminator(AtResult),
     NonTerminating,
 }
 
-/// Classify modem response line.
 pub fn classify_line(line: &str) -> LineClass {
     let trimmed = line.trim();
 
@@ -81,18 +74,15 @@ pub fn classify_line(line: &str) -> LineClass {
     LineClass::NonTerminating
 }
 
-/// Format send reference for CMGS response.
 pub fn format_cmgs_response(reference: u32) -> String {
     format!("+CMGS: {reference}")
 }
 
-/// Parse message reference from CMGS result.
 pub fn parse_cmgs_reference(line: &str) -> Option<u32> {
     let rest = line.trim().strip_prefix("+CMGS:")?;
     rest.trim().parse::<u32>().ok()
 }
 
-/// Send outcome from AT+CMGS exchange.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendOutcome {
     pub status: MessageStatus,
@@ -118,7 +108,6 @@ impl SendOutcome {
     }
 }
 
-/// Parse CMGS send response.
 pub fn parse_send_outcome(lines: &[&str]) -> SendOutcome {
     let mut reference: Option<u32> = None;
 
@@ -148,19 +137,16 @@ pub fn parse_send_outcome(lines: &[&str]) -> SendOutcome {
     SendOutcome::failed(None)
 }
 
-/// Inbound message from AT+CMGR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedInbound {
     pub sender: String,
     pub body: String,
 }
 
-/// Format CMGR response.
 pub fn format_cmgr_response(sender: &str, body: &str) -> String {
     format!("+CMGR: \"REC UNREAD\",\"{sender}\",,\"24/01/02,03:04:05+00\"\r\n{body}\r\nOK")
 }
 
-/// Parse inbound message from CMGR.
 pub fn parse_cmgr(response: &str) -> Option<ParsedInbound> {
     let mut lines = response.lines();
 
@@ -179,7 +165,6 @@ pub fn parse_cmgr(response: &str) -> Option<ParsedInbound> {
     Some(ParsedInbound { sender, body })
 }
 
-/// Extract sender from CMGR header.
 fn parse_cmgr_sender(header: &str) -> Option<String> {
     let rest = header.trim_start().strip_prefix("+CMGR:")?;
     let fields = split_quoted_csv(rest.trim());
@@ -187,7 +172,6 @@ fn parse_cmgr_sender(header: &str) -> Option<String> {
     Some(sender)
 }
 
-/// Split CSV respecting quotes.
 fn split_quoted_csv(s: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut current = String::new();
@@ -382,7 +366,6 @@ impl std::fmt::Display for AtResult {
     }
 }
 
-/// AT command exchange (request, response lines, result).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AtExchange {
     pub command: String,
@@ -390,7 +373,6 @@ pub struct AtExchange {
     pub result: AtResult,
 }
 
-/// SMS send result from Modem Manager.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendResult {
     pub status: MessageStatus,
@@ -399,7 +381,6 @@ pub struct SendResult {
     pub error: Option<String>,
 }
 
-/// Command to Modem Manager.
 pub enum ModemRequest {
     Raw {
         command: String,
@@ -412,7 +393,6 @@ pub enum ModemRequest {
     },
 }
 
-/// Handle to Modem Manager (send commands, get status).
 #[derive(Clone)]
 pub struct ModemHandle {
     tx: mpsc::Sender<ModemRequest>,
@@ -420,7 +400,7 @@ pub struct ModemHandle {
 }
 
 impl ModemHandle {
-    /// Send SMS and await result.
+    
     pub async fn send_sms(&self, to: &str, body: &str) -> SendResult {
         let (reply, rx) = oneshot::channel();
         let request = ModemRequest::SendSms {
@@ -444,7 +424,6 @@ impl ModemHandle {
         })
     }
 
-    /// Issue raw AT command and await result.
     pub async fn raw(&self, command: &str) -> AtExchange {
         let (reply, rx) = oneshot::channel();
         let request = ModemRequest::Raw {
@@ -462,7 +441,6 @@ impl ModemHandle {
         rx.await.unwrap_or_else(|_| unavailable())
     }
 
-    /// Get modem status snapshot.
     pub fn status(&self) -> ModemStatusSnapshot {
         self.status
             .lock()
@@ -471,13 +449,11 @@ impl ModemHandle {
     }
 }
 
-/// Modem Manager endpoint (receiver, status).
 pub struct ModemEndpoint {
     rx: mpsc::Receiver<ModemRequest>,
     status: Arc<Mutex<ModemStatusSnapshot>>,
 }
 
-/// Initial modem status snapshot.
 fn initial_snapshot() -> ModemStatusSnapshot {
     ModemStatusSnapshot {
         serial_connected: false,
@@ -489,7 +465,6 @@ fn initial_snapshot() -> ModemStatusSnapshot {
     }
 }
 
-/// Create connected handle and endpoint.
 pub fn new_modem(buffer: usize) -> (ModemHandle, ModemEndpoint) {
     let (tx, rx) = mpsc::channel(buffer.max(1));
     let status = Arc::new(Mutex::new(initial_snapshot()));
@@ -501,30 +476,23 @@ pub fn new_modem(buffer: usize) -> (ModemHandle, ModemEndpoint) {
     (handle, endpoint)
 }
 
-/// Line-oriented serial transport (abstract for testing).
 pub trait SerialTransport: Send {
-    /// Write data and flush.
+    
     fn write_bytes(&mut self, data: &[u8]) -> impl Future<Output = io::Result<()>> + Send;
 
-    /// Read one line with timeout.
     fn read_line(
         &mut self,
         timeout: Duration,
     ) -> impl Future<Output = io::Result<Option<String>>> + Send;
 }
 
-/// The real serial transport backed by a `tokio-serial` [`SerialStream`].
-///
-/// A persistent `pending` buffer makes [`SerialTransport::read_line`]
-/// cancellation-safe: bytes read but not yet consumed survive a cancelled
-/// poll (e.g. when the manager's `select!` picks the request branch instead).
 pub struct SerialPortTransport {
     stream: SerialStream,
     pending: Vec<u8>,
 }
 
 impl SerialPortTransport {
-    /// Wrap an opened serial stream.
+    
     pub fn new(stream: SerialStream) -> Self {
         SerialPortTransport {
             stream,
@@ -576,16 +544,10 @@ impl SerialTransport for SerialPortTransport {
     }
 }
 
-/// Open the configured serial port at the configured baud rate (Req 8.1).
 fn open_serial(cfg: &Config) -> tokio_serial::Result<SerialStream> {
     tokio_serial::new(&cfg.serial_port, cfg.baud_rate).open_native_async()
 }
 
-/// Write an AT command (appending the carriage return) and collect its
-/// response up to a terminating result code or `timeout` (Req 8.4).
-///
-/// Exposed for integration testing (task 7.5) so a mock [`SerialTransport`]
-/// can drive a single command exchange and inspect the collected lines.
 pub async fn exchange<T: SerialTransport>(
     t: &mut T,
     command: &str,
@@ -600,9 +562,6 @@ pub async fn exchange<T: SerialTransport>(
     Ok(exchange)
 }
 
-/// Read response lines until a terminating result code arrives or `timeout`
-/// elapses, in which case the exchange resolves with [`AtResult::Timeout`]
-/// (Req 8.4, 8.5). The command payload must already have been written.
 async fn collect_until_terminator<T: SerialTransport>(
     t: &mut T,
     command: &str,
@@ -648,15 +607,6 @@ async fn collect_until_terminator<T: SerialTransport>(
     }
 }
 
-/// Run the SMS initialization sequence (Req 8.2, 8.6).
-///
-/// Issues `AT+CMGF=1`, `AT+CSCS="IRA"`, `AT+CSMP=17,167,0,0`, and — when a
-/// service center number is configured — `AT+CSCA="<number>"`. Returns
-/// `Ok(true)` when every command succeeded, `Ok(false)` when one returned an
-/// error (the port is kept open for a later retry, Req 8.8), and `Err` when
-/// the port disconnected mid-init.
-///
-/// Exposed for integration testing (task 7.5).
 pub async fn initialize<T: SerialTransport>(
     cfg: &Config,
     t: &mut T,
@@ -685,8 +635,6 @@ pub async fn initialize<T: SerialTransport>(
     Ok(ok)
 }
 
-/// Insert an audit-log record, logging (but not propagating) any write error
-/// so the caller can continue processing (Req 2.7, 2.9, 10.3, 10.7).
 async fn audit(db: &Db, event_type: &str, key_identifier: Option<&str>, detail: &str) {
     let created_at = Utc::now().to_rfc3339();
     let result = sqlx::query(
@@ -704,7 +652,6 @@ async fn audit(db: &Db, event_type: &str, key_identifier: Option<&str>, detail: 
     }
 }
 
-/// Scan response lines for `+CMTI` URCs and enqueue their storage indices.
 fn scan_cmti(lines: &[String], pending: &mut VecDeque<u32>) {
     for line in lines {
         if let Some(index) = parse_cmti_index(line) {
@@ -713,13 +660,11 @@ fn scan_cmti(lines: &[String], pending: &mut VecDeque<u32>) {
     }
 }
 
-/// Parse the storage index from a `+CMTI: "<mem>",<index>` URC (Req 2.1).
 pub fn parse_cmti_index(line: &str) -> Option<u32> {
     let rest = line.trim().strip_prefix("+CMTI:")?;
     rest.rsplit(',').next()?.trim().parse::<u32>().ok()
 }
 
-/// Map an `AT+CPIN?` response to a [`SimStatus`] (Req 9.3).
 pub fn parse_cpin(lines: &[String]) -> SimStatus {
     match lines.iter().find_map(|l| l.trim().strip_prefix("+CPIN:")) {
         Some(rest) if rest.trim() == "READY" => SimStatus::Ready,
@@ -728,8 +673,6 @@ pub fn parse_cpin(lines: &[String]) -> SimStatus {
     }
 }
 
-/// Whether an `AT+CREG?` response reports network registration (stat 1 home or
-/// 5 roaming) (Req 9.5).
 pub fn parse_creg_registered(lines: &[String]) -> bool {
     if let Some(rest) = lines.iter().find_map(|l| l.trim().strip_prefix("+CREG:"))
         && let Some(stat) = rest.split(',').nth(1)
@@ -739,8 +682,6 @@ pub fn parse_creg_registered(lines: &[String]) -> bool {
     false
 }
 
-/// Convert an `AT+CSQ` response to a 0..=100 signal percentage, or `None` when
-/// the RSSI is unknown (99) or out of range (Req 9.2).
 pub fn parse_csq_percent(lines: &[String]) -> Option<u8> {
     let rest = lines.iter().find_map(|l| l.trim().strip_prefix("+CSQ:"))?;
     let rssi: u32 = rest.split(',').next()?.trim().parse().ok()?;
@@ -750,7 +691,6 @@ pub fn parse_csq_percent(lines: &[String]) -> Option<u8> {
     Some((rssi.saturating_mul(100) / 31) as u8)
 }
 
-/// Recover the operator name from an `AT+COPS?` response (Req 9.2).
 pub fn parse_cops_operator(lines: &[String]) -> Option<String> {
     let rest = lines.iter().find_map(|l| l.trim().strip_prefix("+COPS:"))?;
     let fields = split_quoted_csv(rest.trim());
@@ -762,8 +702,6 @@ pub fn parse_cops_operator(lines: &[String]) -> Option<String> {
     }
 }
 
-/// Refresh the shared status snapshot by querying SIM, registration, signal,
-/// and operator (Req 9.2, 9.3, 9.5). Propagates a disconnect as `Err`.
 async fn refresh_status<T: SerialTransport>(
     t: &mut T,
     status: &Arc<Mutex<ModemStatusSnapshot>>,
@@ -794,17 +732,6 @@ async fn refresh_status<T: SerialTransport>(
     Ok(())
 }
 
-/// Handle a detected inbound-message URC: read, persist, then delete.
-///
-/// Reads the message with `AT+CMGR` retrying up to 3 times on failure,
-/// timeout, or a malformed response (Req 2.8). On a successful read the
-/// message is persisted (Req 2.2) and then deleted with `AT+CMGD` (Req 2.3);
-/// a delete error is audited and processing continues (Req 2.7). If
-/// persistence fails the message is retained in modem storage, the delete is
-/// skipped, and the failure is audited (Req 2.9). Returns `Err` only when the
-/// port disconnects.
-///
-/// Exposed for integration testing (task 7.5).
 pub async fn handle_inbound<T: SerialTransport>(
     t: &mut T,
     db: &Db,
@@ -858,7 +785,7 @@ pub async fn handle_inbound<T: SerialTransport>(
             }
         }
         Err(e) => {
-            // Retain in modem storage and skip the delete (Req 2.9).
+            
             audit(
                 db,
                 "inbound_persist_failed",
@@ -871,9 +798,6 @@ pub async fn handle_inbound<T: SerialTransport>(
     Ok(())
 }
 
-/// Transmit a single message part, retrying transient modem errors (Req 10.6)
-/// up to `send_max_attempts`, and failing without retransmission on a send
-/// timeout (Req 1.9).
 async fn send_part_with_retries<T: SerialTransport>(
     t: &mut T,
     cfg: &Config,
@@ -936,10 +860,6 @@ async fn send_part_with_retries<T: SerialTransport>(
     })
 }
 
-/// Perform a full send: gate on deliverability, segment, set text mode, and
-/// transmit each part in order (Req 1.2, 1.3, 1.8, 10.5).
-///
-/// Exposed for integration testing (task 7.5).
 pub async fn handle_send<T: SerialTransport>(
     t: &mut T,
     cfg: &Config,
@@ -978,8 +898,6 @@ pub async fn handle_send<T: SerialTransport>(
         }
     };
 
-    // Set text mode before transmitting (Req 1.2). Recovers text mode even if
-    // a prior init attempt failed (Req 8.8).
     let cmgf = exchange(t, "AT+CMGF=1", timeout).await?;
     if !cmgf.result.is_ok() {
         tracing::warn!(result = %cmgf.result, "AT+CMGF=1 before send returned non-OK");
@@ -990,7 +908,7 @@ pub async fn handle_send<T: SerialTransport>(
         let result = send_part_with_retries(t, cfg, db, to, &segment.text).await?;
         match result.status {
             MessageStatus::Sent => last_reference = result.reference,
-            // Any failed/deferred part fails the whole message.
+            
             _ => return Ok(result),
         }
     }
@@ -1003,8 +921,6 @@ pub async fn handle_send<T: SerialTransport>(
     })
 }
 
-/// Dispatch a single [`ModemRequest`] through the serial port. Returns `Err`
-/// when the port disconnects so the caller can trigger a reconnect.
 async fn handle_request<T: SerialTransport>(
     request: ModemRequest,
     cfg: &Config,
@@ -1034,22 +950,14 @@ async fn handle_request<T: SerialTransport>(
     Ok(())
 }
 
-/// How a single connected session ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionOutcome {
-    /// All command-channel senders were dropped: shut down gracefully.
+    
     ChannelClosed,
-    /// The serial port disconnected: attempt to reconnect.
+    
     Disconnected,
 }
 
-/// Run one connected session: serialize client requests, interleave URC
-/// monitoring, and periodically refresh the status snapshot. The single-owner
-/// loop guarantees at most one AT command is outstanding at a time (Req 8.3).
-///
-/// Exposed for integration testing (task 7.5) so a mock [`SerialTransport`]
-/// can drive the session loop and observe its termination (e.g. a disconnect
-/// that triggers reconnect-and-reinit).
 pub async fn run_session<T: SerialTransport>(
     cfg: &Config,
     db: &Db,
@@ -1108,13 +1016,6 @@ pub async fn run_session<T: SerialTransport>(
     }
 }
 
-/// The Modem Manager task: own the serial port, serialize AT exchanges,
-/// interleave URC monitoring, and reconnect with exponential backoff and
-/// re-initialization (Req 8.1–8.8, 10.1–10.3).
-///
-/// Returns when the command channel closes (graceful shutdown, Req 11.2) or
-/// when the configured maximum number of reopen attempts is exhausted
-/// (Req 10.3).
 pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint) {
     let ModemEndpoint { mut rx, status } = endpoint;
     let mut attempt: u32 = 0;
@@ -1169,7 +1070,7 @@ pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint) {
                 }
             }
             Err(e) => {
-                // Failed to open the port (Req 8.7).
+                
                 tracing::error!(error = %e, port = %cfg.serial_port, "failed to open serial port");
                 mark_disconnected(&status);
             }
@@ -1181,7 +1082,6 @@ pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint) {
     }
 }
 
-/// Mark the shared snapshot as disconnected and unresponsive.
 fn mark_disconnected(status: &Arc<Mutex<ModemStatusSnapshot>>) {
     let mut snapshot = status
         .lock()
@@ -1190,9 +1090,6 @@ fn mark_disconnected(status: &Arc<Mutex<ModemStatusSnapshot>>) {
     snapshot.responsive = false;
 }
 
-/// Advance the reconnect attempt counter and sleep for the backoff delay
-/// (Req 10.1). Returns `false` when the maximum number of attempts has been
-/// exhausted (Req 10.3), in which case the manager should give up.
 async fn backoff_or_giveup(
     db: &Db,
     cfg: &Config,
@@ -1221,8 +1118,6 @@ async fn backoff_or_giveup(
     true
 }
 
-/// Test/diagnostic seam: drive a single Modem Manager session over an injected
-/// [`SerialTransport`] instead of a real serial port.
 #[doc(hidden)]
 pub async fn run_session_with_transport<T: SerialTransport>(
     cfg: Config,

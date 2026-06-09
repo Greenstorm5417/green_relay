@@ -2,12 +2,12 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/ratelimit.rs`) per the spec's test-placement note, and exercises the
-//! public `RateLimiter` type of the `sms_micro_service` library.
+//! public `RateLimiter` type of the `green_relay` library.
 
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::ratelimit::RateLimiter;
+use green_relay::ratelimit::RateLimiter;
 
 /// Generate two distinct key strings. The second is derived from the first by
 /// appending a marker so the two are guaranteed to differ regardless of the

@@ -1,42 +1,21 @@
-//! Per-API-key fixed-window rate limiter core.
-//!
-//! This module holds the pure decision logic for the fixed-window rate
-//! limiter (task 9.1). A [`WindowState`] tracks the request count and the
-//! start of the current window for a single key; [`decide`] is the pure
-//! transition function that resets the window when it elapses, allows and
-//! counts requests under the configured limit, and rejects requests at or
-//! over the limit without changing the count. [`effective_limit`] resolves a
-//! key's effective limit, validating any custom override.
-//!
-//! The pure core is wrapped by [`RateLimiter`], a small in-memory map that
-//! keeps an independent [`WindowState`] per key so that activity on one key
-//! never affects another (Req 4.4).
-//!
-//! Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Lowest custom rate limit a key may configure (Req 4.6).
 pub const CUSTOM_LIMIT_MIN: u32 = 1;
 
-/// Highest custom rate limit a key may configure (Req 4.6).
 pub const CUSTOM_LIMIT_MAX: u32 = 10_000;
 
-/// Per-key fixed-window accounting state.
-///
-/// `count` is the number of requests allowed in the current window so far,
-/// and `window_start` marks when the current window began.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowState {
-    /// Requests allowed in the current window so far.
+    
     pub count: u32,
-    /// Instant at which the current window began.
+    
     pub window_start: Instant,
 }
 
 impl WindowState {
-    /// Create a fresh state whose window begins at `now` with a zero count.
+    
     pub fn new(now: Instant) -> Self {
         WindowState {
             count: 0,
@@ -45,30 +24,23 @@ impl WindowState {
     }
 }
 
-/// Outcome of a rate-limit decision for a single request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RateDecision {
-    /// The request is permitted. `remaining` is the number of further
-    /// requests still allowed in the current window after this one.
+    
     Allow {
-        /// Further requests allowed in the current window after this one.
+        
         remaining: u32,
     },
-    /// The request is rejected. `retry_after_secs` is the number of seconds
-    /// until the window resets, always in `1..=window_secs` (Req 4.3).
+    
     Reject {
-        /// Seconds until requests are permitted again (1..=window length).
+        
         retry_after_secs: u64,
     },
 }
 
-/// Error produced when a key's configured custom rate limit is out of range.
-///
-/// Surfaced by [`effective_limit`] when a custom limit falls outside
-/// `1..=10_000`; the default limit is applied instead (Req 4.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitConfigError {
-    /// The out-of-range custom limit that was configured.
+    
     pub configured: u32,
 }
 
@@ -84,20 +56,6 @@ impl core::fmt::Display for RateLimitConfigError {
 
 impl std::error::Error for RateLimitConfigError {}
 
-/// Pure fixed-window decision function.
-///
-/// Given the current `state`, the effective `limit`, the `window` length, and
-/// the current instant `now`, this returns the decision and mutates `state`
-/// accordingly:
-///
-/// - If the window has elapsed (`now - window_start >= window`), the window is
-///   reset to start at `now`, this request is counted as the first of the new
-///   window, and the request is allowed (Req 4.5, 4.1).
-/// - Otherwise, while the count is below `limit`, the request is allowed and
-///   the count is increased by exactly one (Req 4.1).
-/// - Otherwise (count at or above `limit`), the request is rejected and the
-///   count is left unchanged; the returned `retry_after_secs` is bounded to
-///   `1..=window_secs` (Req 4.2, 4.3).
 pub fn decide(state: &mut WindowState, limit: u32, window: Duration, now: Instant) -> RateDecision {
     let elapsed = now.saturating_duration_since(state.window_start);
 
@@ -121,11 +79,6 @@ pub fn decide(state: &mut WindowState, limit: u32, window: Duration, now: Instan
     }
 }
 
-/// Compute the `Retry-After` value (in seconds) for a rejected request.
-///
-/// This is the time remaining until the current window ends, rounded up to a
-/// whole second and clamped to `1..=window_secs` so it is always a positive
-/// integer no greater than the configured window length (Req 4.3).
 fn retry_after_secs(window: Duration, elapsed: Duration) -> u64 {
     let window_secs = window.as_secs().max(1);
     let remaining = window.saturating_sub(elapsed);
@@ -133,13 +86,6 @@ fn retry_after_secs(window: Duration, elapsed: Duration) -> u64 {
     secs.clamp(1, window_secs)
 }
 
-/// Resolve the effective rate limit for a key.
-///
-/// When `custom` is `Some(c)` and `c` is within `1..=10_000`, the custom limit
-/// is used with no error (Req 4.6). When `custom` is out of that range, the
-/// `default` limit is used together with a [`RateLimitConfigError`] naming the
-/// offending value (Req 4.7). When `custom` is `None`, the `default` limit is
-/// used with no error.
 pub fn effective_limit(custom: Option<u32>, default: u32) -> (u32, Option<RateLimitConfigError>) {
     match custom {
         Some(c) if (CUSTOM_LIMIT_MIN..=CUSTOM_LIMIT_MAX).contains(&c) => (c, None),
@@ -148,26 +94,19 @@ pub fn effective_limit(custom: Option<u32>, default: u32) -> (u32, Option<RateLi
     }
 }
 
-/// In-memory, per-key fixed-window rate limiter.
-///
-/// Maintains an independent [`WindowState`] for each key so that requests for
-/// one key never change another key's accumulated count (Req 4.4). The actual
-/// decision is delegated to the pure [`decide`] function.
 #[derive(Debug, Default)]
 pub struct RateLimiter {
     states: HashMap<String, WindowState>,
 }
 
 impl RateLimiter {
-    /// Create an empty rate limiter with no tracked keys.
+    
     pub fn new() -> Self {
         RateLimiter {
             states: HashMap::new(),
         }
     }
 
-    /// Make a rate-limit decision for `key`, creating its window state on
-    /// first use. The state for any other key is left untouched (Req 4.4).
     pub fn check(&mut self, key: &str, limit: u32, window: Duration, now: Instant) -> RateDecision {
         if let Some(state) = self.states.get_mut(key) {
             return decide(state, limit, window, now);
@@ -178,13 +117,10 @@ impl RateLimiter {
         decision
     }
 
-    /// Current accumulated request count for `key`, or `0` if the key has not
-    /// been seen. Primarily useful for asserting per-key isolation.
     pub fn count_for(&self, key: &str) -> u32 {
         self.states.get(key).map(|s| s.count).unwrap_or(0)
     }
 
-    /// Borrow the [`WindowState`] tracked for `key`, if any.
     pub fn state_for(&self, key: &str) -> Option<&WindowState> {
         self.states.get(key)
     }
@@ -232,7 +168,7 @@ mod tests {
             }
             other => panic!("expected reject, got {other:?}"),
         }
-        // Count is unchanged after a rejection.
+        
         assert_eq!(state.count, 3);
     }
 
@@ -256,7 +192,7 @@ mod tests {
     fn retry_after_is_within_window_bound() {
         let start = Instant::now();
         let window = Duration::from_secs(60);
-        // Limit reached just after the window opened.
+        
         let mut state = WindowState {
             count: 1,
             window_start: start,
@@ -264,7 +200,7 @@ mod tests {
         let now = start + Duration::from_secs(1);
         match decide(&mut state, 1, window, now) {
             RateDecision::Reject { retry_after_secs } => {
-                // 59 seconds remain in the window.
+                
                 assert_eq!(retry_after_secs, 59);
             }
             other => panic!("expected reject, got {other:?}"),
@@ -308,16 +244,15 @@ mod tests {
         let window = Duration::from_secs(60);
         let mut limiter = RateLimiter::new();
 
-        // Drive key "a" several times.
         for _ in 0..5 {
             limiter.check("a", 100, window, now);
         }
-        // Touch key "b" once.
+        
         limiter.check("b", 100, window, now);
 
         assert_eq!(limiter.count_for("a"), 5);
         assert_eq!(limiter.count_for("b"), 1);
-        // An untouched key has no accumulated count.
+        
         assert_eq!(limiter.count_for("c"), 0);
     }
 }

@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
-//! `build_cmgs` function of the `sms_micro_service` library.
+//! `build_cmgs` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::sms::build_cmgs;
+use green_relay::sms::build_cmgs;
 
 /// The control byte (Ctrl-Z) that terminates an `AT+CMGS` payload and
 /// instructs the modem to transmit the message (Req 1.3).

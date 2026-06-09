@@ -2,12 +2,12 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/auth.rs`) per the spec's test-placement note, and exercises the public
-//! `key_identifier` function of the `sms_micro_service` library.
+//! `key_identifier` function of the `green_relay` library.
 
 use std::collections::HashMap;
 
 use proptest::prelude::*;
-use sms_micro_service::auth::key_identifier;
+use green_relay::auth::key_identifier;
 
 /// Expected length, in characters, of a SHA-256 hex identifier.
 const SHA256_HEX_LEN: usize = 64;

@@ -1,28 +1,12 @@
-//! SMS domain logic: validation, segmentation, and payload building.
 
-/// Maximum number of characters allowed in a message body (Req 1.1, 1.10).
 pub const MAX_BODY_CHARS: usize = 1530;
 
-/// Minimum number of decimal digits in an E.164 number (after the `+`).
 const E164_MIN_DIGITS: usize = 7;
 
-/// Maximum number of decimal digits in an E.164 number (after the `+`).
 const E164_MAX_DIGITS: usize = 15;
 
-/// A validation failure for a send request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValidationError {
-    /// Missing required fields.
-    MissingFields(Vec<String>),
-    /// Invalid E.164 format.
-    InvalidPhoneNumber,
-    /// Empty message body.
-    BodyEmpty,
-    /// Message body exceeds max length.
-    BodyTooLong,
-}
+pub use crate::error::ValidationError;
 
-/// Validate E.164 phone number format.
 pub fn validate_e164(s: &str) -> Result<(), ValidationError> {
     let digits = match s.strip_prefix('+') {
         Some(rest) => rest,
@@ -41,7 +25,6 @@ pub fn validate_e164(s: &str) -> Result<(), ValidationError> {
     }
 }
 
-/// Validate message body length.
 pub fn validate_body(body: &str) -> Result<(), ValidationError> {
     let len = body.chars().count();
     if len == 0 {
@@ -53,12 +36,6 @@ pub fn validate_body(body: &str) -> Result<(), ValidationError> {
     }
 }
 
-/// Check that the required `to` and `body` fields are present in a send
-/// request.
-///
-/// `to` and `body` are `Some` when the field was supplied and `None` when it
-/// was omitted. The returned error names exactly the absent fields, in a
-/// stable order (`to` before `body`) (Req 1.6).
 pub fn check_required_fields(to: Option<&str>, body: Option<&str>) -> Result<(), ValidationError> {
     let mut missing = Vec::new();
     if to.is_none() {
@@ -82,8 +59,8 @@ mod validation_tests {
     #[test]
     fn accepts_valid_e164_numbers() {
         assert_eq!(validate_e164("+14155552671"), Ok(()));
-        assert_eq!(validate_e164("+1234567"), Ok(())); // exactly 7 digits
-        assert_eq!(validate_e164("+123456789012345"), Ok(())); // exactly 15 digits
+        assert_eq!(validate_e164("+1234567"), Ok(())); 
+        assert_eq!(validate_e164("+123456789012345"), Ok(())); 
     }
 
     #[test]
@@ -92,30 +69,30 @@ mod validation_tests {
         assert_eq!(
             validate_e164("14155552671"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); // no '+'
+        ); 
         assert_eq!(
             validate_e164("+123456"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); // 6 digits
+        ); 
         assert_eq!(
             validate_e164("+1234567890123456"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); // 16 digits
+        ); 
         assert_eq!(
             validate_e164("+1415555267a"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); // letter
+        ); 
         assert_eq!(
             validate_e164("+1 4155552671"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); // space
-        assert_eq!(validate_e164("+"), Err(ValidationError::InvalidPhoneNumber)); // no digits
+        ); 
+        assert_eq!(validate_e164("+"), Err(ValidationError::InvalidPhoneNumber)); 
     }
 
     #[test]
     fn validates_body_length_bounds() {
-        assert_eq!(validate_body("a"), Ok(())); // lower bound
-        assert_eq!(validate_body(&"x".repeat(MAX_BODY_CHARS)), Ok(())); // upper bound
+        assert_eq!(validate_body("a"), Ok(())); 
+        assert_eq!(validate_body(&"x".repeat(MAX_BODY_CHARS)), Ok(())); 
         assert_eq!(validate_body(""), Err(ValidationError::BodyEmpty));
         assert_eq!(
             validate_body(&"x".repeat(MAX_BODY_CHARS + 1)),
@@ -125,7 +102,7 @@ mod validation_tests {
 
     #[test]
     fn body_length_counts_characters_not_bytes() {
-        // A 1530-char multibyte string is valid even though it exceeds 1530 bytes.
+        
         let multibyte = "é".repeat(MAX_BODY_CHARS);
         assert_eq!(validate_body(&multibyte), Ok(()));
         assert_eq!(
@@ -158,55 +135,22 @@ mod validation_tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SMS segmentation and CMGS payload building (task 5.5, Requirements 1.3, 1.8)
-// ---------------------------------------------------------------------------
-
-/// Maximum number of GSM-7 characters (septets) in a single, unsegmented SMS.
 const SINGLE_PART_MAX: usize = 160;
 
-/// Maximum number of GSM-7 characters (septets) in each part of a
-/// concatenated (multi-part) SMS. The remaining 7 septets of the 160-septet
-/// budget are consumed by the concatenation User Data Header.
 const MULTI_PART_MAX: usize = 153;
 
-/// Maximum number of parts a single message may be split into (Req 1.8).
 const MAX_PARTS: usize = 10;
 
-/// A single SMS segment with its 1-based sequence number and text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
-    /// 1-based sequence number; segments are returned in ascending order.
+    
     pub seq: u8,
-    /// The text carried by this segment.
+    
     pub text: String,
 }
 
-/// Error returned when a message cannot be segmented.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SegmentError {
-    /// The message requires more than [`MAX_PARTS`] parts to send.
-    TooManyParts {
-        /// The number of parts the message would have required.
-        required: usize,
-    },
-}
+pub use crate::error::SegmentError;
 
-impl core::fmt::Display for SegmentError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            SegmentError::TooManyParts { required } => write!(
-                f,
-                "message requires {required} parts which exceeds the maximum of {MAX_PARTS}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for SegmentError {}
-
-/// Number of GSM-7 septets a single character occupies: characters in the
-/// GSM-7 extension table take two septets, all others take one.
 fn gsm7_char_len(c: char) -> usize {
     match c {
         '^' | '{' | '}' | '\\' | '[' | '~' | ']' | '|' | '€' => 2,
@@ -214,19 +158,10 @@ fn gsm7_char_len(c: char) -> usize {
     }
 }
 
-/// Total GSM-7 length (in septets) of a string.
 fn gsm7_len(s: &str) -> usize {
     s.chars().map(gsm7_char_len).sum()
 }
 
-/// Segment a message body for transmission.
-///
-/// If the body fits in [`SINGLE_PART_MAX`] GSM-7 characters (septets) it is
-/// returned as a single segment. Otherwise it is split into parts of at most
-/// [`MULTI_PART_MAX`] GSM-7 characters each, in ascending sequence order
-/// starting at 1, up to [`MAX_PARTS`] parts. Splits always fall on character
-/// boundaries, so concatenating the segment texts reproduces the original
-/// body exactly. (Req 1.8)
 pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
     let total_septets = gsm7_len(body);
     if total_septets <= SINGLE_PART_MAX {
@@ -272,10 +207,6 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
     Ok(segments)
 }
 
-/// Build the `AT+CMGS` payload for a single message part.
-///
-/// Produces `AT+CMGS="<to>"\r<part>` terminated by the `0x1A` (Ctrl-Z)
-/// control byte that instructs the modem to transmit the message. (Req 1.3)
 pub fn build_cmgs(to: &str, part: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(to.len().saturating_add(part.len()).saturating_add(12));
     payload.extend_from_slice(b"AT+CMGS=\"");
@@ -311,13 +242,13 @@ mod segment_tests {
         let body = "a".repeat(161);
         let segs = segment_message(&body).unwrap();
         assert_eq!(segs.len(), 2);
-        // First part is full (153), second carries the remainder.
+        
         assert_eq!(segs[0].text.chars().count(), 153);
         assert_eq!(segs[1].text.chars().count(), 8);
-        // Sequence numbers ascend from 1 and are contiguous.
+        
         assert_eq!(segs[0].seq, 1);
         assert_eq!(segs[1].seq, 2);
-        // Concatenation reproduces the original body.
+        
         let joined: String = segs.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(joined, body);
     }
@@ -337,8 +268,7 @@ mod segment_tests {
 
     #[test]
     fn too_many_parts_errors() {
-        // Extension characters consume two septets each, so 1530 of them
-        // require 3060 septets => 21 parts, which exceeds the 10-part max.
+        
         let body = "€".repeat(1530);
         let err = segment_message(&body).unwrap_err();
         match err {
@@ -348,10 +278,10 @@ mod segment_tests {
 
     #[test]
     fn extension_chars_count_as_two_septets() {
-        // 80 '€' = 160 septets => still a single part.
+        
         let body = "€".repeat(80);
         assert_eq!(segment_message(&body).unwrap().len(), 1);
-        // 81 '€' = 162 septets => must split.
+        
         let body = "€".repeat(81);
         assert!(segment_message(&body).unwrap().len() > 1);
     }
@@ -359,15 +289,15 @@ mod segment_tests {
     #[test]
     fn build_cmgs_contains_number_and_terminator() {
         let payload = build_cmgs("+14155552671", "hi there");
-        // Terminated by Ctrl-Z (0x1A).
+        
         assert_eq!(*payload.last().unwrap(), 0x1A);
-        // Contains the phone number bytes.
+        
         let needle = b"+14155552671";
         assert!(
             payload.windows(needle.len()).any(|w| w == needle),
             "payload should contain the phone number"
         );
-        // Contains the message part bytes.
+        
         let part = b"hi there";
         assert!(payload.windows(part.len()).any(|w| w == part));
     }

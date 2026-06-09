@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
-//! `validate_body` function of the `sms_micro_service` library.
+//! `validate_body` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::sms::{MAX_BODY_CHARS, validate_body};
+use green_relay::sms::{MAX_BODY_CHARS, validate_body};
 
 /// Independent oracle for the body-length rule, written separately from the
 /// implementation so the property checks the implementation against the

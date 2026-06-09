@@ -17,8 +17,8 @@ use chrono::{TimeZone, Utc};
 use proptest::prelude::*;
 use serde_json::Value;
 
-use sms_micro_service::auth::{ApiKeyId, AuthOutcome, build_audit_record, key_identifier};
-use sms_micro_service::logging::{REDACTED, auth_event_log, redact_credentials};
+use green_relay::auth::{ApiKeyId, AuthOutcome, build_audit_record, key_identifier};
+use green_relay::logging::{REDACTED, auth_event_log, redact_credentials};
 
 /// Generate a realistic credential string (an API key or a password).
 ///

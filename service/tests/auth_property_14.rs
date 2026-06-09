@@ -3,13 +3,13 @@
 //! This test lives in its own integration-test crate (separate from
 //! `src/auth.rs`) per the spec's test-placement note, and exercises the pure
 //! lockout predicate (`lockout_until` / `is_locked_out`) of the
-//! `sms_micro_service` library against an independent oracle derived directly
+//! `green_relay` library against an independent oracle derived directly
 //! from the acceptance criterion (Req 3.8).
 
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::auth::{
+use green_relay::auth::{
     LOCKOUT_DURATION, LOCKOUT_FAILURE_THRESHOLD, LOCKOUT_WINDOW, is_locked_out, lockout_until,
 };
 

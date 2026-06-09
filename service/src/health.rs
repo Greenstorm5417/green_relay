@@ -1,86 +1,58 @@
-//! Health-state derivation and the send deliverability gate.
-//!
-//! This module holds the pure logic for two related concerns (task 10.1):
-//!
-//! - [`derive_health`] folds a [`ModemStatusSnapshot`] into an overall
-//!   [`ServiceHealth`] verdict (Req 9.3–9.6).
-//! - [`deliverability_gate`] decides whether an SMS send may proceed, or
-//!   must be rejected with an HTTP 503 and a `Retry-After` header (Req 10.4).
-//!
-//! Both functions are pure so they can be exhaustively property-tested
-//! (Properties 28 and 30) independent of any I/O.
 
-/// SIM card status as reported by `AT+CPIN?`.
-///
-/// Only the `Ready` state permits SMS operations; every other reported
-/// state (awaiting a PIN/PUK, no SIM, an unrecognized reply, etc.) is
-/// treated as not ready for the purposes of health and deliverability
-/// (Req 9.3).
+/// Represents the status of the SIM card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimStatus {
-    /// The SIM reported `READY` and is usable.
+    
     Ready,
-    /// The SIM reported a state other than `READY` (e.g. `SIM PIN`,
-    /// `SIM PUK`, not inserted).
+    
     NotReady,
-    /// The SIM status could not be determined (no/!malformed `AT+CPIN?`
-    /// response).
+    
     Unknown,
 }
 
 impl SimStatus {
-    /// Whether the SIM is in the `READY` state.
+    
+    /// Returns true if the SIM status is ready.
     pub fn is_ready(self) -> bool {
         matches!(self, SimStatus::Ready)
     }
 }
 
-/// Overall service health derived from a modem status snapshot.
+/// Represents the overall health status of the service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceHealth {
-    /// SIM ready, serial connected, modem responsive, and registered to a
-    /// network (Req 9.6).
+    
     Healthy,
-    /// Operational but not registered to a network, while the SIM is ready
-    /// and the modem is reachable (Req 9.5).
+    
     Degraded,
-    /// Serial disconnected, modem unresponsive, or SIM not ready
-    /// (Req 9.3, 9.4).
+    
     Unhealthy,
 }
 
-/// A point-in-time view of the modem used to derive health and gate sends.
-///
-/// Mirrors the snapshot described in `design.md`. The `signal_percent` and
-/// `operator` fields are surfaced for the status endpoint; neither affects
-/// the health verdict or the deliverability decision, so they are optional
-/// and ignored by the functions in this module.
+/// A snapshot of the current modem status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModemStatusSnapshot {
-    /// Whether the serial port is currently connected (Req 9.4).
+    
+    /// Indicates if the serial connection is active.
     pub serial_connected: bool,
-    /// SIM card status from `AT+CPIN?` (Req 9.3).
+    
+    /// The status of the SIM card.
     pub sim_status: SimStatus,
-    /// Whether the modem is registered to a network, from `AT+CREG?`
-    /// (Req 9.5).
+    
+    /// Indicates if the modem is registered on a network.
     pub registered: bool,
-    /// Whether the modem returned a valid response to an AT exchange within
-    /// 5 seconds across up to 3 attempts (Req 9.4).
+    
+    /// Indicates if the modem is responsive to commands.
     pub responsive: bool,
-    /// Signal quality as a percentage (0..=100) from `AT+CSQ`, when known.
+    
+    /// The signal strength percentage.
     pub signal_percent: Option<u8>,
-    /// Current operator from `AT+COPS?`, when known.
+    
+    /// The network operator name.
     pub operator: Option<String>,
 }
 
-/// Derive the overall [`ServiceHealth`] from a modem status snapshot.
-///
-/// The verdict is, in priority order (Req 9.3–9.6):
-///
-/// 1. **Unhealthy** if the serial port is disconnected, OR the modem is
-///    unresponsive, OR the SIM status is not `READY`.
-/// 2. Otherwise **Degraded** if the modem is not registered to a network.
-/// 3. Otherwise **Healthy**.
+/// Derives the overall service health from a modem status snapshot.
 pub fn derive_health(s: &ModemStatusSnapshot) -> ServiceHealth {
     if !s.serial_connected || !s.responsive || !s.sim_status.is_ready() {
         ServiceHealth::Unhealthy
@@ -91,40 +63,22 @@ pub fn derive_health(s: &ModemStatusSnapshot) -> ServiceHealth {
     }
 }
 
-/// Default `Retry-After` value (in seconds) for a gated send.
-///
-/// Matches the default network-registration retry interval (Req 10.5),
-/// giving clients a sensible hint for when to retry a request rejected by
-/// the deliverability gate.
+/// The default number of seconds to wait before retrying.
 pub const DEFAULT_RETRY_AFTER_SECS: u64 = 30;
 
-/// Outcome of the pure send deliverability gate.
+/// The outcome of checking message deliverability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliverabilityOutcome {
-    /// All preconditions are met; the send may proceed.
+    
     Deliverable,
-    /// A precondition is unmet; the request must be rejected with an HTTP
-    /// 503 status and a `Retry-After` header carrying `retry_after_secs`.
+    
     Rejected {
-        /// Number of seconds to advertise in the `Retry-After` header.
+        
         retry_after_secs: u64,
     },
 }
 
-/// Decide whether an SMS send may proceed (Req 10.4).
-///
-/// A send is rejected with a 503-and-`Retry-After` outcome when any condition
-/// that prevents immediate delivery is present: the serial port is
-/// unavailable, OR the SIM is not ready, OR the modem is not registered to a
-/// network. Otherwise the send is [`Deliverable`](DeliverabilityOutcome::Deliverable).
-///
-/// `retry_after_secs` is the value to advertise in the `Retry-After` header
-/// when the request is rejected; callers typically pass
-/// [`DEFAULT_RETRY_AFTER_SECS`] or a configured interval.
-///
-/// Note that, unlike [`derive_health`], modem responsiveness does not affect
-/// the gate: the gate concerns only the preconditions for delivery named in
-/// Req 10.4.
+/// Determines message deliverability based on modem status.
 pub fn deliverability_gate(
     s: &ModemStatusSnapshot,
     retry_after_secs: u64,
@@ -140,7 +94,6 @@ pub fn deliverability_gate(
 mod tests {
     use super::*;
 
-    /// Baseline healthy snapshot for test mutations.
     fn healthy_snapshot() -> ModemStatusSnapshot {
         ModemStatusSnapshot {
             serial_connected: true,

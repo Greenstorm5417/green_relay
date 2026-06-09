@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
-//! `segment_message` function of the `sms_micro_service` library.
+//! `segment_message` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::sms::{SegmentError, segment_message};
+use green_relay::sms::{SegmentError, segment_message};
 
 /// Per-part GSM-7 budget for a concatenated (multi-part) SMS.
 const MULTI_PART_MAX: usize = 153;

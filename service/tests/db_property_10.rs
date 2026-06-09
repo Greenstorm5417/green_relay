@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/db.rs`) per the spec's test-placement note, and exercises the public
-//! pure `storage_capacity_warn` function of the `sms_micro_service` library.
+//! pure `storage_capacity_warn` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::db::storage_capacity_warn;
+use green_relay::db::storage_capacity_warn;
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]

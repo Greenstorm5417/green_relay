@@ -20,9 +20,9 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 
-use sms_micro_service::config::{Config, LogLevel};
-use sms_micro_service::db::Db;
-use sms_micro_service::modem::{SerialTransport, new_modem, run_session_with_transport};
+use green_relay::config::{Config, LogLevel};
+use green_relay::db::Db;
+use green_relay::modem::{SerialTransport, new_modem, run_session_with_transport};
 
 /// Shared, thread-safe tracker of AT-command concurrency on the mock port.
 ///

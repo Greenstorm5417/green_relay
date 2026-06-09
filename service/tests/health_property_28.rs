@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/health.rs`) per the spec's test-placement note, and exercises the
-//! public `derive_health` function of the `sms_micro_service` library.
+//! public `derive_health` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::health::{ModemStatusSnapshot, ServiceHealth, SimStatus, derive_health};
+use green_relay::health::{ModemStatusSnapshot, ServiceHealth, SimStatus, derive_health};
 
 /// Strategy over all three SIM states so the "not READY" branch is covered by
 /// both `NotReady` and `Unknown`.

@@ -3,11 +3,11 @@
 //! This test lives in its own integration-test crate (separate from
 //! `src/modem.rs`) per the spec's test-placement note, and exercises the
 //! public `classify_line` terminator classifier plus `parse_send_outcome`
-//! error-code mapping of the `sms_micro_service` library.
+//! error-code mapping of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::models::MessageStatus;
-use sms_micro_service::modem::{AtResult, LineClass, classify_line, parse_send_outcome};
+use green_relay::models::MessageStatus;
+use green_relay::modem::{AtResult, LineClass, classify_line, parse_send_outcome};
 
 /// Independent oracle for the terminator classifier, written separately from
 /// the implementation so the property checks the implementation against the

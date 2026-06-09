@@ -1,29 +1,9 @@
-//! Structured logging: `tracing` JSON subscriber and log-record builders.
-//!
-//! This module provides two things:
-//!
-//! 1. [`init_subscriber`] — installs a `tracing` JSON subscriber that writes to
-//!    stdout (so the systemd journal captures it, Req 11.6) with a configurable
-//!    minimum severity (Req 7.4, 7.5).
-//! 2. A pure, testable [`LogRecord`] builder. Every record carries a timestamp
-//!    (calendar date + time-of-day), a [`Severity`] in
-//!    `{TRACE, DEBUG, INFO, WARN, ERROR}`, and a non-empty message (Req 7.1).
-//!    Domain helpers build request logs (method, path, status — Req 7.2) and
-//!    AT-exchange logs (command, result code — Req 7.3). Auth-event helpers
-//!    redact credential fields so plaintext keys/passwords never reach a record
-//!    (Req 7.6, 7.7).
-//!
-//! The builder types are public so the property tests (tasks 2.2–2.4) can
-//! assert well-formedness, domain-field presence, and severity filtering
-//! without standing up a live subscriber.
 
 use std::collections::BTreeMap;
 
 use chrono::Utc;
 use serde_json::{Map, Value};
 
-/// Field names whose values are treated as credentials and never emitted in
-/// plaintext on an auth-event record (Req 7.6, 7.7).
 const CREDENTIAL_FIELDS: &[&str] = &[
     "api_key",
     "apikey",
@@ -37,15 +17,12 @@ const CREDENTIAL_FIELDS: &[&str] = &[
     "token",
 ];
 
-/// Marker substituted for a redacted credential value.
+/// The placeholder string used for redacted credentials.
 pub const REDACTED: &str = "[REDACTED]";
 
-/// Reserved top-level keys that domain fields may not override.
 const RESERVED_KEYS: &[&str] = &["timestamp", "severity", "message"];
 
-/// Log severity levels (Req 7.1). Ordering is ascending by importance:
-/// `Trace < Debug < Info < Warn < Error`, which drives severity filtering
-/// (Req 7.4, 7.5).
+/// Represents log severity levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
     Trace,
@@ -56,7 +33,8 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// All severities, ascending. Useful for exhaustive testing.
+    
+    /// An array of all severity levels.
     pub const ALL: [Severity; 5] = [
         Severity::Trace,
         Severity::Debug,
@@ -65,8 +43,7 @@ impl Severity {
         Severity::Error,
     ];
 
-    /// The canonical uppercase string for this severity, exactly one of
-    /// `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` (Req 7.1).
+    /// Returns the canonical string representation of the severity.
     pub fn as_str(self) -> &'static str {
         match self {
             Severity::Trace => "TRACE",
@@ -77,8 +54,7 @@ impl Severity {
         }
     }
 
-    /// Parse a severity from its canonical name (case-insensitive). Used by the
-    /// configuration loader to map the configured minimum level.
+    /// Parses a severity level from a string.
     pub fn parse(s: &str) -> Option<Severity> {
         match s.trim().to_ascii_uppercase().as_str() {
             "TRACE" => Some(Severity::Trace),
@@ -103,31 +79,25 @@ impl From<Severity> for tracing::Level {
     }
 }
 
-/// A structured log record (Req 7.1). Holds a timestamp, a severity, a message,
-/// and any number of additional domain fields. Render it to JSON with
-/// [`LogRecord::to_json_value`] / [`LogRecord::to_json_string`].
+/// A structured log record containing metadata and key-value fields.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord {
-    /// RFC 3339 / ISO 8601 timestamp including calendar date and time-of-day,
-    /// e.g. `2024-01-15T12:34:56.789Z`.
+    
     timestamp: String,
     severity: Severity,
     message: String,
-    /// Extra structured fields keyed by name. Kept in a `BTreeMap` for stable,
-    /// deterministic JSON ordering.
+    
     fields: BTreeMap<String, Value>,
 }
 
 impl LogRecord {
-    /// Build a record with the current UTC time as its timestamp. The message
-    /// is stored as given; callers are expected to supply a non-empty message
-    /// (Req 7.1).
+    
+    /// Creates a new log record with the current timestamp.
     pub fn new(severity: Severity, message: impl Into<String>) -> Self {
         Self::with_timestamp(severity, message, Self::now_timestamp())
     }
 
-    /// Build a record with an explicit timestamp string. Primarily for tests
-    /// that need deterministic output.
+    /// Creates a new log record with a specific timestamp.
     pub fn with_timestamp(
         severity: Severity,
         message: impl Into<String>,
@@ -141,12 +111,12 @@ impl LogRecord {
         }
     }
 
-    /// Current UTC timestamp formatted with both date and time-of-day.
+    /// Returns the current UTC timestamp formatted as a string.
     pub fn now_timestamp() -> String {
         Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
     }
 
-    /// Attach an arbitrary structured field. Reserved keys are ignored.
+    /// Adds a custom key-value field to the log record.
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         let key = key.into();
         if !RESERVED_KEYS.contains(&key.as_str()) {
@@ -155,32 +125,32 @@ impl LogRecord {
         self
     }
 
-    /// The record's severity.
+    /// Returns the severity of the log record.
     pub fn severity(&self) -> Severity {
         self.severity
     }
 
-    /// The record's message.
+    /// Returns the message of the log record.
     pub fn message(&self) -> &str {
         &self.message
     }
 
-    /// The record's timestamp string.
+    /// Returns the timestamp of the log record.
     pub fn timestamp(&self) -> &str {
         &self.timestamp
     }
 
-    /// Look up an attached field by name.
+    /// Returns the value of a specific field if it exists.
     pub fn field(&self, key: &str) -> Option<&Value> {
         self.fields.get(key)
     }
 
-    /// Whether this record should be emitted given a minimum severity.
+    /// Determines if the record should be emitted based on a minimum severity.
     pub fn should_emit(&self, min_severity: Severity) -> bool {
         self.severity >= min_severity
     }
 
-    /// Render the record to a JSON object value.
+    /// Converts the log record to a JSON value.
     pub fn to_json_value(&self) -> Value {
         let mut map = Map::new();
         map.insert(
@@ -198,15 +168,14 @@ impl LogRecord {
         Value::Object(map)
     }
 
-    /// Render the record to a compact JSON string.
+    /// Converts the log record to a JSON string.
     pub fn to_json_string(&self) -> String {
-        // Serializing a `serde_json::Value` cannot fail.
+        
         self.to_json_value().to_string()
     }
 }
 
-/// Build a request log record carrying the HTTP method, path, and resulting
-/// status code (Req 7.2).
+/// Creates a log record for an HTTP request.
 pub fn request_log(method: &str, path: &str, status: u16) -> LogRecord {
     LogRecord::new(Severity::Info, "request")
         .with_field("method", method.to_string())
@@ -214,22 +183,21 @@ pub fn request_log(method: &str, path: &str, status: u16) -> LogRecord {
         .with_field("status", status as i64)
 }
 
-/// Build an AT-exchange log record carrying the issued command and the result
-/// code returned by the modem (Req 7.3).
+/// Creates a log record for an AT command exchange.
 pub fn at_exchange_log(command: &str, result_code: &str) -> LogRecord {
     LogRecord::new(Severity::Debug, "at_exchange")
         .with_field("command", command.to_string())
         .with_field("result", result_code.to_string())
 }
 
-/// Build an authentication-event log record.
+/// Creates a log record for an authentication event.
 pub fn auth_event_log(key_identifier: &str, outcome: &str) -> LogRecord {
     LogRecord::new(Severity::Info, "auth_event")
         .with_field("key_identifier", key_identifier.to_string())
         .with_field("outcome", outcome.to_string())
 }
 
-/// Redact credential-named fields from a field map in place.
+/// Redacts sensitive fields from a map of fields.
 pub fn redact_credentials(fields: &mut BTreeMap<String, Value>) {
     for (key, value) in fields.iter_mut() {
         if is_credential_field(key) {
@@ -238,27 +206,15 @@ pub fn redact_credentials(fields: &mut BTreeMap<String, Value>) {
     }
 }
 
-/// Whether a field name denotes a credential that must be redacted.
+/// Checks if a field name matches a known credential pattern.
 pub fn is_credential_field(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     CREDENTIAL_FIELDS.contains(&lower.as_str())
 }
 
-/// Error returned when the global tracing subscriber cannot be installed.
-#[derive(Debug)]
-pub struct SubscriberInitError(pub String);
+pub use crate::error::SubscriberInitError;
 
-impl std::fmt::Display for SubscriberInitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "failed to initialize logging subscriber: {}", self.0)
-    }
-}
-
-impl std::error::Error for SubscriberInitError {}
-
-/// Initialize the global `tracing` JSON subscriber writing to stdout.
-///
-/// Uses `try_init` so repeated initialization returns an error rather than panicking.
+/// Initializes the global tracing subscriber with a minimum severity level.
 pub fn init_subscriber(min_severity: Severity) -> Result<(), SubscriberInitError> {
     let max_level: tracing::Level = min_severity.into();
     tracing_subscriber::fmt()
@@ -310,7 +266,7 @@ mod tests {
         assert_eq!(value["message"], "hello");
         let ts = value["timestamp"].as_str().unwrap();
         assert!(!ts.is_empty());
-        // Includes both date and time-of-day separated by 'T'.
+        
         assert!(ts.contains('T'));
         assert!(ts.contains('-'));
         assert!(ts.contains(':'));

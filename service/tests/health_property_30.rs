@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/health.rs`) per the spec's test-placement note, and exercises the
-//! public `deliverability_gate` function of the `sms_micro_service` library.
+//! public `deliverability_gate` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::health::{
+use green_relay::health::{
     DeliverabilityOutcome, ModemStatusSnapshot, SimStatus, deliverability_gate,
 };
 

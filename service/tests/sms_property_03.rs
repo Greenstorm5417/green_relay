@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
-//! `check_required_fields` function of the `sms_micro_service` library.
+//! `check_required_fields` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::sms::{ValidationError, check_required_fields};
+use green_relay::sms::{ValidationError, check_required_fields};
 
 /// Independent oracle: the set of field names that are absent, in the stable
 /// order the implementation is specified to use (`to` before `body`).

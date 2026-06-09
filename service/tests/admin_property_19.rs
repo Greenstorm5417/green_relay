@@ -3,13 +3,13 @@
 //! This test lives in its own integration-test crate (separate from
 //! `src/admin.rs`) per the spec's test-placement note, and exercises the
 //! public `hash_password` / `verify_password` functions of the
-//! `sms_micro_service` library.
+//! `green_relay` library.
 //!
 //! Argon2 is intentionally expensive, so the case count is kept near the
 //! 100-iteration minimum.
 
 use proptest::prelude::*;
-use sms_micro_service::admin::{hash_password, verify_password};
+use green_relay::admin::{hash_password, verify_password};
 
 /// Generate an arbitrary password string, including the empty string and
 /// strings containing arbitrary unicode, so the property holds across the

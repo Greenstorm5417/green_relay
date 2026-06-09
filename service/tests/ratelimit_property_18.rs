@@ -2,10 +2,10 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/ratelimit.rs`) per the spec's test-placement note, and exercises the
-//! public `effective_limit` function of the `sms_micro_service` library.
+//! public `effective_limit` function of the `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::ratelimit::{
+use green_relay::ratelimit::{
     CUSTOM_LIMIT_MAX, CUSTOM_LIMIT_MIN, RateLimitConfigError, effective_limit,
 };
 

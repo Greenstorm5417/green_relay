@@ -2,12 +2,12 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/admin.rs`) per the spec's test-placement note, and exercises the
-//! public `admin_locked` function of the `sms_micro_service` library.
+//! public `admin_locked` function of the `green_relay` library.
 
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use sms_micro_service::admin::{
+use green_relay::admin::{
     ADMIN_FAILURE_WINDOW, ADMIN_LOCK_DURATION, ADMIN_MAX_FAILURES, admin_locked,
 };
 

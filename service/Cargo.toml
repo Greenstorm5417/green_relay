@@ -1,5 +1,5 @@
 [package]
-name = "sms_micro_service"
+name = "green_relay"
 version = "0.1.0"
 edition = "2024"
 
@@ -16,11 +16,11 @@ default = []
 web-ui = ["dep:tower-http"]
 
 [lib]
-name = "sms_micro_service"
+name = "green_relay"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sms_micro_service"
+name = "green_relay"
 path = "src/main.rs"
 
 [dependencies]
@@ -76,11 +76,14 @@ libc = "0.2"
 [lints.rust]
 unsafe_code = "forbid"
 
+[lints.clippy]
+items_after_statements = "deny"
+
 # Build dependencies at opt-level 3 even in dev/test so the crypto-heavy crates
 # (argon2, sha2) and sqlx do not make the property tests run for minutes, while
 # our own crate stays unoptimized for fast incremental builds.
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 1
 
 [profile.release]
 opt-level = 3

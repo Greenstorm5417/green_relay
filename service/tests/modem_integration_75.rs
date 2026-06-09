@@ -18,11 +18,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use sms_micro_service::config::{Config, LogLevel};
-use sms_micro_service::db::Db;
-use sms_micro_service::health::{ModemStatusSnapshot, SimStatus};
-use sms_micro_service::models::MessageStatus;
-use sms_micro_service::modem::{
+use green_relay::config::{Config, LogLevel};
+use green_relay::db::Db;
+use green_relay::health::{ModemStatusSnapshot, SimStatus};
+use green_relay::models::MessageStatus;
+use green_relay::modem::{
     ModemRequest, SerialTransport, SessionOutcome, handle_inbound, handle_send, initialize,
     parse_cmti_index, run_session,
 };

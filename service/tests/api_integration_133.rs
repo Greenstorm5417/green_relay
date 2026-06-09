@@ -1,7 +1,7 @@
 //! HTTP integration tests for the REST API layer (task 13.3).
 //!
 //! These tests drive the fully-assembled Axum router built by
-//! [`sms_micro_service::api::router`] through `tower`'s
+//! [`green_relay::api::router`] through `tower`'s
 //! [`ServiceExt::oneshot`], exercising the public HTTP surface end-to-end
 //! without binding a TCP socket or touching real modem hardware. They cover:
 //!
@@ -30,12 +30,12 @@ use chrono::Utc;
 use serde_json::Value;
 use tower::util::ServiceExt; // for `oneshot`
 
-use sms_micro_service::api::{ApiState, ModemPort, router};
-use sms_micro_service::auth::key_identifier;
-use sms_micro_service::db::Db;
-use sms_micro_service::health::{ModemStatusSnapshot, SimStatus};
-use sms_micro_service::models::MessageStatus;
-use sms_micro_service::modem::SendResult;
+use green_relay::api::{ApiState, ModemPort, router};
+use green_relay::auth::key_identifier;
+use green_relay::db::Db;
+use green_relay::health::{ModemStatusSnapshot, SimStatus};
+use green_relay::models::MessageStatus;
+use green_relay::modem::SendResult;
 
 // ---------------------------------------------------------------------------
 // Stub modem

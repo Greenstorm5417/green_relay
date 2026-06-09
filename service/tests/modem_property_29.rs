@@ -3,10 +3,10 @@
 //! This test lives in its own integration-test crate (separate from
 //! `src/modem.rs`) per the spec's test-placement note, and exercises the pure
 //! `reconnect_backoff_secs` / `reconnect_backoff_schedule` functions of the
-//! `sms_micro_service` library.
+//! `green_relay` library.
 
 use proptest::prelude::*;
-use sms_micro_service::modem::{
+use green_relay::modem::{
     RECONNECT_BACKOFF_CAP_SECS, reconnect_backoff_schedule, reconnect_backoff_secs,
 };
 

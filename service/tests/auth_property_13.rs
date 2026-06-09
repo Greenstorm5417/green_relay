@@ -2,7 +2,7 @@
 //!
 //! This test lives in its own integration-test crate (separate from
 //! `src/auth.rs`) per the spec's test-placement note, and exercises the public
-//! `passes_guard` function of the `sms_micro_service` library.
+//! `passes_guard` function of the `green_relay` library.
 //!
 //! The guard is the pre-lookup gate from Req 3.7: a presented key is only
 //! acceptable for a store lookup when it is non-empty and no longer than
@@ -11,7 +11,7 @@
 //! the boundary of the *character* count (not byte length) that matters.
 
 use proptest::prelude::*;
-use sms_micro_service::auth::{MAX_KEY_LEN, passes_guard};
+use green_relay::auth::{MAX_KEY_LEN, passes_guard};
 
 /// Independent oracle for the guard, written separately from the
 /// implementation: a key is rejected (no lookup) if and only if its character

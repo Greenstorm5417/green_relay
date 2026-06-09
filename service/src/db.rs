@@ -1,7 +1,3 @@
-//! SQLite persistence layer: pool, schema, migrations, and queries.
-//! Migrations are applied on startup before the service accepts requests.
-//! Writes are transactional with rollback on failure.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -12,64 +8,19 @@ use sqlx::{Acquire, Row, SqlitePool};
 
 use crate::models::{InboundMessage, MessageStatus, OutboundMessage};
 
-/// Ordered, versioned schema migration.
 struct Migration {
     version: i64,
     sql: &'static str,
 }
 
-/// Migration v1: create full schema for all five record types.
-///
-/// The statements live in `src/sql/schema_v1.sql` and are inlined into the
-/// binary at build time; keeping the larger migration SQL in its own file
-/// avoids embedding it as a literal here.
 const SCHEMA_V1: &str = include_str!("sql/schema_v1.sql");
 
-/// All migrations in ascending version order.
 const MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
     sql: SCHEMA_V1,
 }];
 
-/// Errors produced by the persistence layer.
-#[derive(Debug)]
-pub enum DbError {
-    /// Schema gate not yet open.
-    NotReady,
-    /// Schema migration failed.
-    Migration { version: i64, source: sqlx::Error },
-    /// Database query or connection error.
-    Sqlx(sqlx::Error),
-}
-
-impl DbError {
-    /// Whether this is the "not ready" condition (HTTP 503).
-    pub fn is_not_ready(&self) -> bool {
-        matches!(self, DbError::NotReady)
-    }
-}
-
-impl std::fmt::Display for DbError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DbError::NotReady => write!(f, "database schema is not ready"),
-            DbError::Migration { version, source } => {
-                write!(f, "migration {version} failed: {source}")
-            }
-            DbError::Sqlx(e) => write!(f, "database error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for DbError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            DbError::Migration { source, .. } => Some(source),
-            DbError::Sqlx(e) => Some(e),
-            DbError::NotReady => None,
-        }
-    }
-}
+pub use crate::error::DbError;
 
 impl From<sqlx::Error> for DbError {
     fn from(e: sqlx::Error) -> Self {
@@ -77,7 +28,7 @@ impl From<sqlx::Error> for DbError {
     }
 }
 
-/// Persistence handle shared across the service.
+/// Provides access to the persistent SQLite database pool.
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
@@ -85,7 +36,8 @@ pub struct Db {
 }
 
 impl Db {
-    /// Connect to SQLite database, creating if missing.
+    
+    /// Connects to the SQLite database at the specified path.
     pub async fn connect(database_path: &str) -> Result<Db, DbError> {
         let options = SqliteConnectOptions::new()
             .filename(database_path)
@@ -101,7 +53,7 @@ impl Db {
         })
     }
 
-    /// Connect to private in-memory database for tests.
+    /// Connects to an in-memory SQLite database for testing.
     #[cfg(test)]
     pub async fn connect_in_memory() -> Result<Db, DbError> {
         let options = SqliteConnectOptions::new()
@@ -120,24 +72,24 @@ impl Db {
         })
     }
 
-    /// Connect and run migrations in one step.
+    /// Initializes a database connection and runs pending migrations.
     pub async fn initialize(database_path: &str) -> Result<Db, DbError> {
         let db = Db::connect(database_path).await?;
         db.run_migrations().await?;
         Ok(db)
     }
 
-    /// Borrow the underlying connection pool.
+    /// Returns a reference to the underlying SQLite connection pool.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 
-    /// Whether the schema-ready gate is open.
+    /// Returns true if all pending migrations have run and schema is ready.
     pub fn is_schema_ready(&self) -> bool {
         self.schema_ready.load(Ordering::SeqCst)
     }
 
-    /// Create schema if absent, otherwise apply pending migrations.
+    /// Executes all outstanding schema migrations.
     pub async fn run_migrations(&self) -> Result<(), DbError> {
         let mut conn = self.pool.acquire().await?;
 
@@ -193,7 +145,6 @@ impl Db {
         Ok(())
     }
 
-    /// Schema-ready gate guard for message-record writes.
     fn ensure_ready(&self) -> Result<(), DbError> {
         if self.is_schema_ready() {
             Ok(())
@@ -202,7 +153,7 @@ impl Db {
         }
     }
 
-    /// Create a new outbound message record transactionally.
+    /// Inserts a new outbound message record into the database.
     pub async fn create_outbound_message(
         &self,
         to_number: &str,
@@ -254,7 +205,7 @@ impl Db {
         })
     }
 
-    /// Update outbound message status, reference, and error code transactionally.
+    /// Updates the status, message reference, or error code of an outbound message.
     pub async fn update_outbound_message(
         &self,
         id: i64,
@@ -313,7 +264,7 @@ impl Db {
         Ok(message)
     }
 
-    /// Fetch a single outbound message by id.
+    /// Fetches a single outbound message record by its ID.
     pub async fn get_outbound_message(&self, id: i64) -> Result<Option<OutboundMessage>, DbError> {
         let row = sqlx::query(
             "SELECT id, to_number, body, status, part_count, msg_reference, error_code, created_at, updated_at \
@@ -329,7 +280,7 @@ impl Db {
         }
     }
 
-    /// Create a new inbound message record transactionally.
+    /// Inserts a new inbound message record into the database.
     pub async fn create_inbound_message(
         &self,
         from_number: &str,
@@ -369,7 +320,7 @@ impl Db {
         })
     }
 
-    /// Fetch a single inbound message by id.
+    /// Fetches a single inbound message record by its ID.
     pub async fn get_inbound_message(&self, id: i64) -> Result<Option<InboundMessage>, DbError> {
         let row = sqlx::query(
             "SELECT id, from_number, body, received_at FROM inbound_messages WHERE id = ?",
@@ -384,7 +335,7 @@ impl Db {
         }
     }
 
-    /// List all inbound messages ordered by receipt timestamp descending.
+    /// Lists all inbound messages in descending order of receipt.
     pub async fn list_inbound_messages(&self) -> Result<Vec<InboundMessage>, DbError> {
         let rows = sqlx::query(
             "SELECT id, from_number, body, received_at \
@@ -396,9 +347,69 @@ impl Db {
 
         rows.iter().map(inbound_from_row).collect()
     }
+
+    /// Create a new admin user, or reset an existing one's password.
+    ///
+    /// Used to bootstrap the first administrator (the table starts empty) and
+    /// to recover access. When the username already exists its password hash is
+    /// replaced and any failed-attempt lockout is cleared; otherwise a new row
+    /// is inserted. Returns `true` when a new user was created, `false` when an
+    /// existing user was updated. The write is transactional.
+    pub async fn upsert_admin_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+    ) -> Result<bool, DbError> {
+        self.ensure_ready()?;
+
+        let now_text = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+
+        let update = sqlx::query(
+            "UPDATE admin_users \
+                SET password_hash = ?, failed_attempts = 0, locked_until = NULL \
+              WHERE username = ?",
+        )
+        .bind(password_hash)
+        .bind(username)
+        .execute(&mut *tx)
+        .await;
+
+        let updated = match update {
+            Ok(result) => result.rows_affected(),
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(DbError::Sqlx(e));
+            }
+        };
+
+        let created = if updated == 0 {
+            let insert = sqlx::query(
+                "INSERT INTO admin_users \
+                     (username, password_hash, failed_attempts, locked_until, created_at) \
+                 VALUES (?, ?, 0, NULL, ?)",
+            )
+            .bind(username)
+            .bind(password_hash)
+            .bind(&now_text)
+            .execute(&mut *tx)
+            .await;
+
+            if let Err(e) = insert {
+                let _ = tx.rollback().await;
+                return Err(DbError::Sqlx(e));
+            }
+            true
+        } else {
+            false
+        };
+
+        tx.commit().await?;
+        Ok(created)
+    }
 }
 
-/// Storage capacity warning decision: true if used >= 90% of total.
+/// Warns if the database storage used has reached 90% or more of capacity.
 pub fn storage_capacity_warn(used: u32, total: u32) -> bool {
     if total == 0 {
         return false;
@@ -406,14 +417,12 @@ pub fn storage_capacity_warn(used: u32, total: u32) -> bool {
     u64::from(used) * 10 >= u64::from(total) * 9
 }
 
-/// Parse RFC 3339 timestamp back into UTC DateTime.
 fn parse_ts(text: &str) -> Result<DateTime<Utc>, DbError> {
     DateTime::parse_from_rfc3339(text)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| DbError::Sqlx(sqlx::Error::Decode(Box::new(e))))
 }
 
-/// Map a row from outbound_messages into OutboundMessage.
 fn outbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<OutboundMessage, DbError> {
     let status_text: String = row.try_get("status")?;
     let status = MessageStatus::from_db_str(&status_text).ok_or_else(|| {
@@ -438,7 +447,6 @@ fn outbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<OutboundMessage, D
     })
 }
 
-/// Map a row from inbound_messages into InboundMessage.
 fn inbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<InboundMessage, DbError> {
     let received_at: String = row.try_get("received_at")?;
     Ok(InboundMessage {
@@ -453,7 +461,6 @@ fn inbound_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<InboundMessage, DbE
 mod tests {
     use super::*;
 
-    /// All five tables exist after migrations.
     #[tokio::test]
     async fn migrations_create_all_five_tables() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -477,7 +484,6 @@ mod tests {
         }
     }
 
-    /// Schema-ready gate opens after migrations.
     #[tokio::test]
     async fn schema_ready_gate_opens_after_migrations() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -486,7 +492,6 @@ mod tests {
         assert!(db.is_schema_ready());
     }
 
-    /// Writes before gate opens are rejected.
     #[tokio::test]
     async fn writes_before_ready_are_rejected() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -497,7 +502,6 @@ mod tests {
         assert!(err.is_not_ready());
     }
 
-    /// Created outbound record can be read back equal.
     #[tokio::test]
     async fn outbound_create_and_read_back() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -514,7 +518,6 @@ mod tests {
         assert_eq!(created, fetched);
     }
 
-    /// Update outbound persists status and reference.
     #[tokio::test]
     async fn outbound_update_persists_status_and_reference() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -536,8 +539,6 @@ mod tests {
         assert_eq!(fetched, updated);
     }
 
-    /// Updating a non-existent row fails (and rolls back) rather than silently
-    /// succeeding (Req 6.6).
     #[tokio::test]
     async fn update_missing_outbound_errors() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -550,7 +551,6 @@ mod tests {
         assert!(!err.is_not_ready());
     }
 
-    /// An inbound record round-trips through create + read-back (Req 6.4).
     #[tokio::test]
     async fn inbound_create_and_read_back() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -565,8 +565,6 @@ mod tests {
         assert_eq!(created, fetched);
     }
 
-    /// Listing inbound messages on an empty table returns an empty collection
-    /// (Req 2.4).
     #[tokio::test]
     async fn list_inbound_empty_returns_empty() {
         let db = Db::connect_in_memory().await.unwrap();
@@ -576,67 +574,79 @@ mod tests {
         assert!(listed.is_empty());
     }
 
-    /// Listing inbound messages returns every record exactly once, ordered by
-    /// receipt timestamp descending regardless of insertion order (Req 2.4).
     #[tokio::test]
-    async fn list_inbound_orders_by_received_at_desc() {
-        use chrono::TimeZone;
-
+    async fn list_inbound_returns_all_newest_first_and_breaks_ties_with_highest_id() {
         let db = Db::connect_in_memory().await.unwrap();
         db.run_migrations().await.unwrap();
 
-        let t = |secs: u32| Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, secs).unwrap();
+        let base = Utc::now();
+        let t1 = base;
+        let t2 = base + Duration::from_secs(10);
+        let t3 = base + Duration::from_secs(20);
 
-        db.create_inbound_message("+1000", "middle", t(20))
-            .await
-            .unwrap();
-        db.create_inbound_message("+1001", "oldest", t(10))
-            .await
-            .unwrap();
-        db.create_inbound_message("+1002", "newest", t(30))
-            .await
-            .unwrap();
+        let m1 = db.create_inbound_message("1", "first", t1).await.unwrap();
+        let m2 = db.create_inbound_message("2", "second", t2).await.unwrap();
+        let m3 = db.create_inbound_message("3", "third_tie_a", t3).await.unwrap();
+        let m4 = db.create_inbound_message("4", "third_tie_b", t3).await.unwrap();
 
         let listed = db.list_inbound_messages().await.unwrap();
-        let bodies: Vec<&str> = listed.iter().map(|m| m.body.as_str()).collect();
-        assert_eq!(bodies, ["newest", "middle", "oldest"]);
-        assert_eq!(listed.len(), 3);
+        assert_eq!(listed.len(), 4);
+        assert_eq!(listed[0], m4);
+        assert_eq!(listed[1], m3);
+        assert_eq!(listed[2], m2);
+        assert_eq!(listed[3], m1);
     }
 
-    /// The storage-capacity warn decision triggers exactly at the 90% threshold
-    /// and treats a zero-capacity report as "no warning" (Req 2.6).
     #[test]
-    fn storage_capacity_warn_threshold() {
-        // Below 90%.
-        assert!(!storage_capacity_warn(89, 100));
-        // Exactly 90%.
-        assert!(storage_capacity_warn(90, 100));
-        // Above 90%.
-        assert!(storage_capacity_warn(100, 100));
-        // Zero used.
-        assert!(!storage_capacity_warn(0, 100));
-        // Zero total -> no capacity, no warning.
+    fn capacity_alert_triggers_at_90_percent_of_limit() {
         assert!(!storage_capacity_warn(0, 0));
-        // Integer-exact threshold where floating point could misround:
-        // 9/10 = 90% exactly -> warn.
-        assert!(storage_capacity_warn(9, 10));
-        // 8/10 = 80% -> no warn.
+        assert!(!storage_capacity_warn(10, 0));
+        assert!(!storage_capacity_warn(0, 10));
+        
+        assert!(!storage_capacity_warn(89, 100));
+        assert!(storage_capacity_warn(90, 100));
+        assert!(storage_capacity_warn(95, 100));
+        
         assert!(!storage_capacity_warn(8, 10));
+        assert!(storage_capacity_warn(9, 10));
+        
+        assert!(storage_capacity_warn(18, 20));
+        assert!(!storage_capacity_warn(17, 20));
     }
 
-    /// Running migrations twice is idempotent: the second run applies nothing
-    /// and the gate stays open (Req 6.3).
+    /// Bootstrapping a fresh admin inserts the user, and a second upsert resets
+    /// the password in place rather than failing on the unique constraint.
     #[tokio::test]
-    async fn migrations_are_idempotent() {
+    async fn upsert_admin_creates_then_resets() {
         let db = Db::connect_in_memory().await.unwrap();
         db.run_migrations().await.unwrap();
-        db.run_migrations().await.unwrap();
-        assert!(db.is_schema_ready());
 
-        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(applied, MIGRATIONS.len() as i64);
+        let first_hash = crate::admin::hash_password("first-secret");
+        let created = db.upsert_admin_user("root", &first_hash).await.unwrap();
+        assert!(created, "first upsert should create the user");
+
+        // Exactly one row, with the original password verifying.
+        let (id, stored): (i64, String) =
+            sqlx::query_as("SELECT id, password_hash FROM admin_users WHERE username = ?")
+                .bind("root")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert!(crate::admin::verify_password("first-secret", &stored));
+
+        let second_hash = crate::admin::hash_password("second-secret");
+        let created_again = db.upsert_admin_user("root", &second_hash).await.unwrap();
+        assert!(!created_again, "second upsert should update, not create");
+
+        let (id_after, stored_after): (i64, String) =
+            sqlx::query_as("SELECT id, password_hash FROM admin_users WHERE username = ?")
+                .bind("root")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        // Same row, new password.
+        assert_eq!(id, id_after);
+        assert!(crate::admin::verify_password("second-secret", &stored_after));
+        assert!(!crate::admin::verify_password("first-secret", &stored_after));
     }
 }

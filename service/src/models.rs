@@ -1,31 +1,22 @@
-//! Shared data models and enums (messages, API keys, statuses).
-//!
-//! These types mirror the database schema and derive `serde` for API/persistence
-//! and comparison traits for property tests.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Lifecycle status of an [`OutboundMessage`].
-///
-/// Stored in the database as lowercase text; `serde(rename_all = "lowercase")`
-/// keeps the wire/storage representation stable.
+/// Represents the delivery or sending status of a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageStatus {
-    /// Accepted and persisted, not yet transmitted to the modem.
+    
     Queued,
-    /// Successfully handed to the modem.
+    
     Sent,
-    /// Transmission failed (modem error code, timeout, or retry exhaustion).
+    
     Failed,
 }
 
 impl MessageStatus {
-    /// The canonical lowercase text stored in the database for this status.
-    ///
-    /// This matches the `serde(rename_all = "lowercase")` representation so
-    /// the database and wire encodings stay identical.
+    
+    /// Returns the string representation of the message status used in the database.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             MessageStatus::Queued => "queued",
@@ -34,8 +25,7 @@ impl MessageStatus {
         }
     }
 
-    /// Parse a status from its stored text value, returning `None` for any
-    /// value that is not one of the three known statuses.
+    /// Parses a message status from its database string representation.
     pub fn from_db_str(s: &str) -> Option<MessageStatus> {
         match s {
             "queued" => Some(MessageStatus::Queued),
@@ -46,63 +36,75 @@ impl MessageStatus {
     }
 }
 
-/// An SMS the service sends to a recipient.
-///
-/// Mirrors the `OUTBOUND_MESSAGES` table.
+/// Represents an outgoing SMS message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutboundMessage {
-    /// Primary key.
+    
+    /// The unique identifier of the message.
     pub id: i64,
-    /// Recipient phone number in E.164 format.
+    
+    /// The recipient's phone number.
     pub to_number: String,
-    /// The message body as submitted by the client.
+    
+    /// The body text of the message.
     pub body: String,
-    /// Current lifecycle status.
+    
+    /// The current delivery status of the message.
     pub status: MessageStatus,
-    /// Number of SMS parts the body was segmented into (>= 1).
+    
+    /// The number of parts/segments the message is split into.
     pub part_count: u8,
-    /// Modem-assigned message reference returned by `+CMGS`, when sent.
+    
+    /// The reference assigned by the network/modem.
     pub msg_reference: Option<String>,
-    /// Modem error code (`+CMS`/`+CME ERROR`) or timeout indication, when failed.
+    
+    /// The error code if sending failed.
     pub error_code: Option<String>,
-    /// Time the record was created (request accepted), in UTC.
+    
+    /// The timestamp when the message was created.
     pub created_at: DateTime<Utc>,
-    /// Time the record was last updated, in UTC.
+    
+    /// The timestamp when the message was last updated.
     pub updated_at: DateTime<Utc>,
 }
 
-/// An SMS the service receives from a sender.
-///
-/// Mirrors the `INBOUND_MESSAGES` table.
+/// Represents an incoming SMS message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboundMessage {
-    /// Primary key.
+    
+    /// The unique identifier of the message.
     pub id: i64,
-    /// Sender phone number as reported by the modem.
+    
+    /// The sender's phone number.
     pub from_number: String,
-    /// The received message body.
+    
+    /// The body text of the message.
     pub body: String,
-    /// System UTC time at which the message was read from the modem.
+    
+    /// The timestamp when the message was received.
     pub received_at: DateTime<Utc>,
 }
 
-/// A stored API key credential.
-///
-/// Mirrors the `API_KEYS` table. The plaintext key is never persisted;
-/// only its cryptographic hash and a non-reversible identifier are stored.
+/// Represents an API key used for authentication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKey {
-    /// Primary key.
+    
+    /// The unique identifier of the API key.
     pub id: i64,
-    /// Cryptographic hash of the presented key (never the plaintext).
+    
+    /// The hash of the API key.
     pub key_hash: String,
-    /// Non-reversible identifier (SHA-256 hex) safe to log and audit.
+    
+    /// A non-sensitive identifier for the API key.
     pub key_identifier: String,
-    /// Optional per-key request limit overriding the default (1..=10_000).
+    
+    /// An optional custom rate limit for the API key.
     pub custom_rate_limit: Option<u32>,
-    /// Whether the key has been revoked.
+    
+    /// Indicates if the API key has been revoked.
     pub revoked: bool,
-    /// Time the key was created, in UTC.
+    
+    /// The timestamp when the API key was created.
     pub created_at: DateTime<Utc>,
 }
 

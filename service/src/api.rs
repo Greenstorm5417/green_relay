@@ -1,7 +1,3 @@
-//! REST API: Axum handlers for send, inbound, status, health endpoints.
-//! Validates requests, runs deliverability gate, persists messages, dispatches
-//! to Modem Manager. Authentication & rate-limit layers via middleware.
-//! ModemPort trait enables testing with stubs.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -36,19 +32,17 @@ use crate::sms::{
     validate_e164,
 };
 
-/// Default per-key request limit when a key defines no custom limit (Req 4.1).
+/// Default rate limit value.
 pub const DEFAULT_RATE_LIMIT: u32 = 100;
 
-/// Default rate-limit window length in seconds (Req 4.1, 4.5).
+/// Default rate limit window in seconds.
 pub const DEFAULT_RATE_WINDOW_SECS: u64 = 60;
 
-// ---------------------------------------------------------------------------
-// Modem access abstraction
-// ---------------------------------------------------------------------------
-
-/// Abstraction over Modem Manager for testability.
+/// Port interface for modem interactions.
 pub trait ModemPort: Clone + Send + Sync + 'static {
+    /// Retrieves a status snapshot of the modem.
     fn status_snapshot(&self) -> ModemStatusSnapshot;
+    /// Sends an SMS message.
     fn send(&self, to: String, body: String) -> impl Future<Output = SendResult> + Send;
 }
 
@@ -62,23 +56,27 @@ impl ModemPort for ModemHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared handler state
-// ---------------------------------------------------------------------------
-
-/// Shared state for REST API handlers. Cloning is cheap (internal Arcs).
+/// API shared state configuration.
 #[derive(Clone)]
 pub struct ApiState<M: ModemPort> {
+    /// Database pool handle.
     pub db: Db,
+    /// Modem port instance.
     pub modem: M,
+    /// Retry after header default value.
     pub retry_after_secs: u64,
+    /// Authentication failure tracker.
     pub auth_failures: Arc<Mutex<FailureTracker>>,
+    /// Rate limiter instance.
     pub rate_limiter: Arc<Mutex<RateLimiter>>,
+    /// Default rate limit threshold.
     pub default_rate_limit: u32,
+    /// Default rate limit window.
     pub rate_window: Duration,
 }
 
 impl<M: ModemPort> ApiState<M> {
+    /// Creates a new ApiState.
     pub fn new(db: Db, modem: M) -> Self {
         ApiState {
             db,
@@ -91,6 +89,7 @@ impl<M: ModemPort> ApiState<M> {
         }
     }
 
+    /// Creates a new ApiState with custom retry after value.
     pub fn with_retry_after(db: Db, modem: M, retry_after_secs: u64) -> Self {
         ApiState {
             retry_after_secs,
@@ -98,6 +97,7 @@ impl<M: ModemPort> ApiState<M> {
         }
     }
 
+    /// Configures the default rate limits.
     pub fn with_rate_config(mut self, default_rate_limit: u32, rate_window: Duration) -> Self {
         self.default_rate_limit = default_rate_limit;
         self.rate_window = rate_window;
@@ -105,63 +105,53 @@ impl<M: ModemPort> ApiState<M> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Wire types
-// ---------------------------------------------------------------------------
-
-/// Send request body.
+/// Payload for sending an SMS.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SendRequest {
+    /// Recipient E.164 phone number.
     pub to: Option<String>,
+    /// Message body.
     pub body: Option<String>,
 }
 
-/// Acceptance response.
+/// Response returned on successful SMS submission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SendResponse {
+    /// The unique message ID.
     pub id: i64,
+    /// Current delivery status.
     pub status: MessageStatus,
+    /// Number of split segments.
     pub parts: u8,
 }
 
-/// Client-facing error.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ApiError {
-    pub error: String,
-    pub fields: Vec<String>,
-}
+pub use crate::error::ApiError;
 
-impl ApiError {
-    fn new(error: impl Into<String>, fields: Vec<String>) -> Self {
-        ApiError {
-            error: error.into(),
-            fields,
-        }
-    }
-}
-
-/// Health endpoint response.
+/// Response representing the service health status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HealthResponse {
+    /// Overall health value.
     pub health: &'static str,
+    /// Connection state of serial port.
     pub serial_connected: bool,
+    /// Sim status description.
     pub sim_status: &'static str,
 }
 
-/// Status endpoint response.
+/// Response representing the detailed modem status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusResponse {
+    /// Signal strength percentage.
     pub signal_percent: Option<u8>,
+    /// Registration status.
     pub registered: Option<bool>,
+    /// Current network operator name.
     pub operator: Option<String>,
+    /// List of unavailable status conditions.
     pub unavailable: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
-
-/// Build REST API router with protected (auth + rate-limit) and public endpoints.
+/// Creates the router containing all API routes.
 pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
     let protected = Router::new()
         .route("/api/v1/messages", post(send_handler::<M>))
@@ -188,16 +178,12 @@ pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
     protected.merge(public)
 }
 
-// -- Middleware: auth & rate-limit
-
-/// Context from auth layer for rate-limit layer.
 #[derive(Debug, Clone)]
 struct AuthContext {
     custom_rate_limit: Option<u32>,
     identifier: String,
 }
 
-/// KeyStore adapter for pre-resolved key lookups.
 struct ResolvedStore {
     id: Option<ApiKeyId>,
 }
@@ -208,7 +194,6 @@ impl KeyStore for ResolvedStore {
     }
 }
 
-/// Extract API key from x-api-key header or Bearer token.
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get("x-api-key").and_then(|v| v.to_str().ok())
         && !value.is_empty()
@@ -228,7 +213,6 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-/// Look up active, non-revoked key by identifier.
 async fn lookup_active_key(
     db: &Db,
     identifier: &str,
@@ -253,7 +237,6 @@ async fn lookup_active_key(
     }
 }
 
-/// Build 401 response.
 fn unauthorized_response() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -262,7 +245,6 @@ fn unauthorized_response() -> Response {
         .into_response()
 }
 
-/// API-key authentication middleware.
 async fn auth_middleware<M: ModemPort>(
     State(state): State<ApiState<M>>,
     mut request: Request,
@@ -331,7 +313,6 @@ async fn auth_middleware<M: ModemPort>(
     }
 }
 
-/// Emit structured audit record (never logs plaintext key).
 fn emit_auth_audit(identifier: &str, outcome: &AuthOutcome, timestamp: chrono::DateTime<Utc>) {
     let record = build_audit_record_with_identifier(identifier.to_string(), outcome, timestamp);
     tracing::info!(
@@ -342,7 +323,6 @@ fn emit_auth_audit(identifier: &str, outcome: &AuthOutcome, timestamp: chrono::D
     );
 }
 
-/// Per-key rate-limit middleware.
 async fn rate_limit_middleware<M: ModemPort>(
     State(state): State<ApiState<M>>,
     Extension(ctx): Extension<AuthContext>,
@@ -370,9 +350,6 @@ async fn rate_limit_middleware<M: ModemPort>(
     }
 }
 
-// -- Send handler
-
-/// Outcome of preparing and queuing a send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SendDecision {
     Accepted(SendResponse),
@@ -421,7 +398,6 @@ impl IntoResponse for SendDecision {
     }
 }
 
-/// POST /api/v1/messages
 async fn send_handler<M: ModemPort>(
     State(state): State<ApiState<M>>,
     body: Result<Json<SendRequest>, JsonRejection>,
@@ -439,7 +415,6 @@ async fn send_handler<M: ModemPort>(
     queue_send(&state, &request).await.into_response()
 }
 
-/// Validate, gate, persist queued message, dispatch to modem.
 async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> SendDecision {
     let (Some(to), Some(body)) = (request.to.as_deref(), request.body.as_deref()) else {
         let err = check_required_fields(request.to.as_deref(), request.body.as_deref())
@@ -499,7 +474,6 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
     })
 }
 
-/// Dispatch send, reconcile result (sent/failed/queued).
 async fn dispatch_send<M: ModemPort>(db: &Db, modem: &M, id: i64, to: String, body: String) {
     let result = modem.send(to, body).await;
     match result.status {
@@ -522,9 +496,6 @@ async fn dispatch_send<M: ModemPort>(db: &Db, modem: &M, id: i64, to: String, bo
     }
 }
 
-// -- Inbound & outbound status
-
-/// GET /api/v1/messages/inbound
 async fn inbound_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
     match state.db.list_inbound_messages().await {
         Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
@@ -532,7 +503,6 @@ async fn inbound_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Resp
     }
 }
 
-/// GET /api/v1/messages/{id}
 async fn outbound_status_handler<M: ModemPort>(
     State(state): State<ApiState<M>>,
     Path(id): Path<i64>,
@@ -548,22 +518,17 @@ async fn outbound_status_handler<M: ModemPort>(
     }
 }
 
-// -- Health & status
-
-/// GET /health
 async fn health_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
     let snapshot = state.modem.status_snapshot();
     let (status, body) = build_health_response(&snapshot);
     (status, Json(body)).into_response()
 }
 
-/// GET /status
 async fn status_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
     let snapshot = state.modem.status_snapshot();
     (StatusCode::OK, Json(build_status_response(&snapshot))).into_response()
 }
 
-/// Build health response from snapshot.
 fn build_health_response(snapshot: &ModemStatusSnapshot) -> (StatusCode, HealthResponse) {
     let health = derive_health(snapshot);
     let status = match health {
@@ -578,10 +543,6 @@ fn build_health_response(snapshot: &ModemStatusSnapshot) -> (StatusCode, HealthR
     (status, body)
 }
 
-/// Build status response, marking unavailable commands.
-///
-/// Registration unavailable when modem unresponsive; signal/operator from
-/// snapshot optionals.
 fn build_status_response(snapshot: &ModemStatusSnapshot) -> StatusResponse {
     let mut unavailable = Vec::new();
 
@@ -611,8 +572,6 @@ fn build_status_response(snapshot: &ModemStatusSnapshot) -> StatusResponse {
         unavailable,
     }
 }
-
-// -- Response helpers
 
 fn health_str(health: ServiceHealth) -> &'static str {
     match health {
@@ -678,7 +637,6 @@ fn json_with_retry_after(status: StatusCode, retry_after_secs: u64, body: ApiErr
 mod tests {
     use super::*;
 
-    /// Stub Modem Manager with fixed snapshot & canned result.
     #[derive(Clone)]
     struct StubModem {
         snapshot: ModemStatusSnapshot,
@@ -718,7 +676,7 @@ mod tests {
     }
 
     fn queued_result() -> SendResult {
-        // Leaves the record queued (Req 10.5) so post-send state is deterministic.
+        
         SendResult {
             status: MessageStatus::Queued,
             reference: None,
@@ -760,7 +718,6 @@ mod tests {
             other => panic!("expected Accepted, got {other:?}"),
         };
 
-        // The record is persisted; the queued stub result leaves it queued.
         let stored = db.get_outbound_message(id).await.unwrap().unwrap();
         assert_eq!(stored.to_number, "+14155552671");
         assert_eq!(stored.body, "hello");
@@ -975,8 +932,6 @@ mod tests {
         );
     }
 
-    // -- Middleware wiring tests (Req 3.1–3.4, 4.2, 4.3) --------------------
-
     use axum::body::Body;
     use tower::util::ServiceExt;
 
@@ -997,7 +952,6 @@ mod tests {
         result.last_insert_rowid()
     }
 
-    /// Mark key as revoked.
     async fn revoke_key(db: &Db, id: i64) {
         sqlx::query("UPDATE api_keys SET revoked = 1 WHERE id = ?")
             .bind(id)
@@ -1095,7 +1049,7 @@ mod tests {
     async fn rate_limit_rejects_over_limit_with_retry_after() {
         let db = ready_db().await;
         insert_key(&db, "limited-key", None).await;
-        // Default limit of 1 request per window so the second request trips it.
+        
         let state = test_state(db).with_rate_config(1, Duration::from_secs(60));
         let app = router(state);
 
