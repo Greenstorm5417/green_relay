@@ -1,13 +1,44 @@
 # Green Relay — SMS Microservice
 
-An asynchronous Rust daemon that sends and receives SMS through a Waveshare
-SIM7600X 4G USB modem over AT commands. It exposes an API-key-authenticated
-REST API, a real-time Server-Sent Events stream, a synchronous send endpoint,
-and an Argon2-secured admin dashboard, persisting state in SQLite. It is
-designed to run as a `systemd` service on a Raspberry Pi.
+Green Relay turns a [Waveshare SIM7600G-H 4G DONGLE](https://www.waveshare.com/wiki/SIM7600G-H_4G_DONGLE)
+into a self-hosted SMS REST API. It is an asynchronous Rust daemon that sends
+and receives SMS through the dongle over AT commands and exposes an
+API-key-authenticated REST API, a real-time Server-Sent Events stream, a
+synchronous send endpoint, and an Argon2-secured admin dashboard, persisting
+state in SQLite. It is designed to run as a `systemd` service on a Raspberry Pi.
 
 Repository: <https://github.com/Greenstorm5417/green_relay>
 API docs (Swagger UI): <https://greenstorm5417.github.io/green_relay/>
+
+## Hardware: SIM7600G-H 4G DONGLE
+
+The [SIM7600G-H 4G DONGLE](https://www.waveshare.com/wiki/SIM7600G-H_4G_DONGLE)
+is a global-band LTE Cat-4 modem on a USB stick with a SIM slot. When plugged
+in (directly or via the dongle's USB cable) it enumerates as a set of USB
+serial (CDC-ACM) devices on Linux — typically `/dev/ttyUSB2` is the AT-command
+port. The service is built entirely around that interface:
+
+- **One owner of the port.** A single Modem Manager task opens the configured
+  serial device at 115200 baud and serializes every AT exchange, so at most one
+  command is ever outstanding. This avoids the data races that plague modems
+  shared by multiple callers.
+- **REST in, AT commands out.** Send requests are validated, segmented if
+  longer than one SMS, and transmitted with `AT+CMGF=1` (text mode) followed by
+  `AT+CMGS`. Delivery results (`+CMGS`, `+CMS/+CME ERROR`) update the message
+  record. Inbound messages arrive as `+CMTI` unsolicited result codes, which the
+  manager reads with `AT+CMGR` and deletes with `AT+CMGD` only after the message
+  is durably persisted.
+- **Health from the modem.** `/health` and `/status` surface SIM state
+  (`AT+CPIN?`), registration (`AT+CREG?`), signal (`AT+CSQ`), and operator
+  (`AT+COPS?`) so you can monitor the link.
+- **Resilient connection.** If the serial device disappears the manager
+  reconnects with exponential backoff and re-runs the SMS initialization
+  sequence.
+
+Insert an activated SIM (PIN disabled, or set it in config), plug the dongle in,
+point `SERIAL_PORT` at the AT device (default `/dev/ttyUSB2`), and the REST API
+is your SMS gateway. See the Waveshare wiki for driver/enumeration details and
+antenna setup.
 
 ## Layout
 
@@ -73,5 +104,3 @@ the modem's serial device.
 
 Pushes to `main` run `cargo fmt` (auto-committed back), `cargo clippy`, and
 the full test suite. See `.github/workflows/`.
-
-<!-- CI trigger -->
