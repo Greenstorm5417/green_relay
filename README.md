@@ -73,3 +73,5 @@ the modem's serial device.
 
 Pushes to `main` run `cargo fmt` (auto-committed back), `cargo clippy`, and
 the full test suite. See `.github/workflows/`.
+
+<!-- CI trigger -->
