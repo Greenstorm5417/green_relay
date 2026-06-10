@@ -224,23 +224,31 @@ pub async fn run() -> Result<(), RunError> {
 
     let server = axum::serve(listener, app).with_graceful_shutdown(graceful);
 
+    // The complete graceful shutdown: drain in-flight HTTP connections, then
+    // wait for the Modem Manager to finish its in-flight AT exchanges and exit.
+    let graceful_shutdown = async move {
+        server.await.map_err(RunError::Serve)?;
+        drop(modem_handle);
+        let _ = modem_task.await;
+        Ok::<(), RunError>(())
+    };
+
+    // Bound the entire shutdown sequence by the grace period (Req 11.2, 11.3):
+    // if it overruns — e.g. the Modem Manager is stuck in reconnect backoff and
+    // cannot complete in-flight work — force a non-zero exit. Returning drops
+    // the in-flight shutdown future, and the runtime cancels any remaining
+    // tasks as the process exits.
     tokio::select! {
-        result = server => {
-
-            result.map_err(RunError::Serve)?;
-            drop(modem_handle);
-
-            let _ = modem_task.await;
+        result = graceful_shutdown => {
+            result?;
             tracing::info!("graceful shutdown complete");
             Ok(())
         }
         _ = shutdown_watchdog(notify_rx) => {
-
             tracing::error!(
                 grace_secs = SHUTDOWN_GRACE.as_secs(),
                 "graceful shutdown exceeded the grace period; forcing exit"
             );
-            modem_task.abort();
             Err(RunError::ShutdownTimeout)
         }
     }
