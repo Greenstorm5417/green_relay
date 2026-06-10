@@ -346,6 +346,7 @@ use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::events::{EventBus, InboundSmsEvent, ServiceEvent};
 use crate::health::{ModemStatusSnapshot, SimStatus};
 use crate::sms::{build_cmgs, segment_message};
 
@@ -739,6 +740,17 @@ pub async fn handle_inbound<T: SerialTransport>(
     timeout: Duration,
     pending: &mut VecDeque<u32>,
 ) -> io::Result<()> {
+    handle_inbound_inner(t, db, index, timeout, pending, None).await
+}
+
+async fn handle_inbound_inner<T: SerialTransport>(
+    t: &mut T,
+    db: &Db,
+    index: u32,
+    timeout: Duration,
+    pending: &mut VecDeque<u32>,
+    events: Option<&EventBus>,
+) -> io::Result<()> {
     let read_timeout = Duration::from_secs(CMGR_READ_TIMEOUT_SECS);
     let mut parsed: Option<ParsedInbound> = None;
 
@@ -772,6 +784,13 @@ pub async fn handle_inbound<T: SerialTransport>(
     {
         Ok(record) => {
             tracing::info!(id = record.id, "inbound message persisted");
+            if let Some(events) = events {
+                events.publish(ServiceEvent::InboundSms(InboundSmsEvent {
+                    id: record.id,
+                    from: message.sender.clone(),
+                    body: message.body.clone(),
+                }));
+            }
             let delete = exchange(t, &format!("AT+CMGD={index}"), timeout).await?;
             scan_cmti(&delete.lines, pending);
             if !delete.result.is_ok() {
@@ -965,13 +984,24 @@ pub async fn run_session<T: SerialTransport>(
     t: &mut T,
     status: &Arc<Mutex<ModemStatusSnapshot>>,
 ) -> SessionOutcome {
+    run_session_inner(cfg, db, rx, t, status, None).await
+}
+
+async fn run_session_inner<T: SerialTransport>(
+    cfg: &Config,
+    db: &Db,
+    rx: &mut mpsc::Receiver<ModemRequest>,
+    t: &mut T,
+    status: &Arc<Mutex<ModemStatusSnapshot>>,
+    events: Option<&EventBus>,
+) -> SessionOutcome {
     let timeout = Duration::from_secs(cfg.at_timeout_secs);
     let mut pending: VecDeque<u32> = VecDeque::new();
     let mut last_refresh: Option<Instant> = None;
 
     loop {
         while let Some(index) = pending.pop_front() {
-            if handle_inbound(t, db, index, timeout, &mut pending)
+            if handle_inbound_inner(t, db, index, timeout, &mut pending, events)
                 .await
                 .is_err()
             {
@@ -1016,7 +1046,7 @@ pub async fn run_session<T: SerialTransport>(
     }
 }
 
-pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint) {
+pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint, events: EventBus) {
     let ModemEndpoint { mut rx, status } = endpoint;
     let mut attempt: u32 = 0;
 
@@ -1057,7 +1087,9 @@ pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint) {
                     }
                 }
 
-                let outcome = run_session(&cfg, &db, &mut rx, &mut transport, &status).await;
+                let outcome =
+                    run_session_inner(&cfg, &db, &mut rx, &mut transport, &status, Some(&events))
+                        .await;
                 mark_disconnected(&status);
                 match outcome {
                     SessionOutcome::ChannelClosed => {

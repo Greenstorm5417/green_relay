@@ -1,4 +1,5 @@
 
+use std::convert::Infallible;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -8,11 +9,16 @@ use axum::{
     extract::{Path, Request, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
+use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 use tower::ServiceBuilder;
 
 use crate::auth::{
@@ -20,6 +26,7 @@ use crate::auth::{
     build_audit_record_with_identifier, key_identifier, passes_guard,
 };
 use crate::db::Db;
+use crate::events::{EventBus, MessageStatusEvent, ServiceEvent};
 use crate::health::{
     DEFAULT_RETRY_AFTER_SECS, DeliverabilityOutcome, ModemStatusSnapshot, ServiceHealth, SimStatus,
     deliverability_gate, derive_health,
@@ -37,6 +44,10 @@ pub const DEFAULT_RATE_LIMIT: u32 = 100;
 
 /// Default rate limit window in seconds.
 pub const DEFAULT_RATE_WINDOW_SECS: u64 = 60;
+
+/// Maximum time the synchronous send endpoint waits for delivery to complete
+/// before falling back to a `202 Accepted` queued response.
+const SYNC_SEND_WAIT_SECS: u64 = 30;
 
 /// Port interface for modem interactions.
 pub trait ModemPort: Clone + Send + Sync + 'static {
@@ -73,6 +84,8 @@ pub struct ApiState<M: ModemPort> {
     pub default_rate_limit: u32,
     /// Default rate limit window.
     pub rate_window: Duration,
+    /// Real-time event broadcast bus.
+    pub events: EventBus,
 }
 
 impl<M: ModemPort> ApiState<M> {
@@ -86,6 +99,7 @@ impl<M: ModemPort> ApiState<M> {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             default_rate_limit: DEFAULT_RATE_LIMIT,
             rate_window: Duration::from_secs(DEFAULT_RATE_WINDOW_SECS),
+            events: EventBus::default(),
         }
     }
 
@@ -101,6 +115,12 @@ impl<M: ModemPort> ApiState<M> {
     pub fn with_rate_config(mut self, default_rate_limit: u32, rate_window: Duration) -> Self {
         self.default_rate_limit = default_rate_limit;
         self.rate_window = rate_window;
+        self
+    }
+
+    /// Sets the event bus used to broadcast real-time updates.
+    pub fn with_events(mut self, events: EventBus) -> Self {
+        self.events = events;
         self
     }
 }
@@ -121,6 +141,19 @@ pub struct SendResponse {
     pub id: i64,
     /// Current delivery status.
     pub status: MessageStatus,
+    /// Number of split segments.
+    pub parts: u8,
+}
+
+/// Response returned by the synchronous send endpoint once delivery resolves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncSendResponse {
+    /// The unique message ID.
+    pub id: i64,
+    /// Terminal delivery status (`sent` or `failed`).
+    pub status: MessageStatus,
+    /// The modem-assigned reference when the message was sent.
+    pub reference: Option<String>,
     /// Number of split segments.
     pub parts: u8,
 }
@@ -155,8 +188,10 @@ pub struct StatusResponse {
 pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
     let protected = Router::new()
         .route("/api/v1/messages", post(send_handler::<M>))
+        .route("/api/v1/messages/sync", post(send_sync_handler::<M>))
         .route("/api/v1/messages/inbound", get(inbound_handler::<M>))
         .route("/api/v1/messages/{id}", get(outbound_status_handler::<M>))
+        .route("/api/v1/events", get(events_handler::<M>))
         .route_layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn_with_state(
@@ -415,25 +450,59 @@ async fn send_handler<M: ModemPort>(
     queue_send(&state, &request).await.into_response()
 }
 
-async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> SendDecision {
+async fn send_sync_handler<M: ModemPort>(
+    State(state): State<ApiState<M>>,
+    body: Result<Json<SendRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match body {
+        Ok(json) => json,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError::new("request body must be valid JSON", Vec::new())),
+            )
+                .into_response();
+        }
+    };
+    sync_send(&state, &request).await
+}
+
+/// A validated, persisted send ready to be dispatched to the Modem Manager.
+struct PreparedSend {
+    id: i64,
+    to: String,
+    body: String,
+    parts: u8,
+}
+
+/// The resolved outcome of a single dispatch.
+struct DispatchOutcome {
+    status: MessageStatus,
+    reference: Option<String>,
+}
+
+async fn prepare_send<M: ModemPort>(
+    state: &ApiState<M>,
+    request: &SendRequest,
+) -> Result<PreparedSend, SendDecision> {
     let (Some(to), Some(body)) = (request.to.as_deref(), request.body.as_deref()) else {
         let err = check_required_fields(request.to.as_deref(), request.body.as_deref())
             .err()
             .unwrap_or(ValidationError::MissingFields(Vec::new()));
-        return SendDecision::Invalid(err);
+        return Err(SendDecision::Invalid(err));
     };
 
     if let Err(err) = validate_e164(to) {
-        return SendDecision::Invalid(err);
+        return Err(SendDecision::Invalid(err));
     }
     if let Err(err) = validate_body(body) {
-        return SendDecision::Invalid(err);
+        return Err(SendDecision::Invalid(err));
     }
 
     let parts = match segment_message(body) {
         Ok(segments) => segments.len() as u8,
         Err(SegmentError::TooManyParts { required }) => {
-            return SendDecision::TooManyParts { required };
+            return Err(SendDecision::TooManyParts { required });
         }
     };
 
@@ -441,7 +510,7 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
     if let DeliverabilityOutcome::Rejected { retry_after_secs } =
         deliverability_gate(&snapshot, state.retry_after_secs)
     {
-        return SendDecision::Gated { retry_after_secs };
+        return Err(SendDecision::Gated { retry_after_secs });
     }
 
     let record = match state
@@ -451,20 +520,37 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
     {
         Ok(record) => record,
         Err(err) if err.is_not_ready() => {
-            return SendDecision::NotReady {
+            return Err(SendDecision::NotReady {
                 retry_after_secs: state.retry_after_secs,
-            };
+            });
         }
-        Err(_) => return SendDecision::ServerError,
+        Err(_) => return Err(SendDecision::ServerError),
     };
 
-    let id = record.id;
+    Ok(PreparedSend {
+        id: record.id,
+        to: to.to_string(),
+        body: body.to_string(),
+        parts,
+    })
+}
+
+async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> SendDecision {
+    let PreparedSend {
+        id,
+        to,
+        body,
+        parts,
+    } = match prepare_send(state, request).await {
+        Ok(prepared) => prepared,
+        Err(decision) => return decision,
+    };
+
     let db = state.db.clone();
     let modem = state.modem.clone();
-    let to_owned = to.to_string();
-    let body_owned = body.to_string();
+    let events = state.events.clone();
     tokio::spawn(async move {
-        dispatch_send(&db, &modem, id, to_owned, body_owned).await;
+        dispatch_send(&db, &modem, &events, id, to, body, None).await;
     });
 
     SendDecision::Accepted(SendResponse {
@@ -474,14 +560,72 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
     })
 }
 
-async fn dispatch_send<M: ModemPort>(db: &Db, modem: &M, id: i64, to: String, body: String) {
+async fn sync_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> Response {
+    let PreparedSend {
+        id,
+        to,
+        body,
+        parts,
+    } = match prepare_send(state, request).await {
+        Ok(prepared) => prepared,
+        Err(decision) => return decision.into_response(),
+    };
+
+    let (reply, rx) = oneshot::channel();
+    let db = state.db.clone();
+    let modem = state.modem.clone();
+    let events = state.events.clone();
+    tokio::spawn(async move {
+        dispatch_send(&db, &modem, &events, id, to, body, Some(reply)).await;
+    });
+
+    let wait = Duration::from_secs(SYNC_SEND_WAIT_SECS);
+    match tokio::time::timeout(wait, rx).await {
+        Ok(Ok(outcome)) if outcome.status != MessageStatus::Queued => (
+            StatusCode::OK,
+            Json(SyncSendResponse {
+                id,
+                status: outcome.status,
+                reference: outcome.reference,
+                parts,
+            }),
+        )
+            .into_response(),
+        // Timed out, deferred (still queued), or the dispatcher dropped the
+        // reply: the send continues in the background, so report the queued
+        // acceptance rather than blocking the client indefinitely.
+        _ => (
+            StatusCode::ACCEPTED,
+            Json(SendResponse {
+                id,
+                status: MessageStatus::Queued,
+                parts,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn dispatch_send<M: ModemPort>(
+    db: &Db,
+    modem: &M,
+    events: &EventBus,
+    id: i64,
+    to: String,
+    body: String,
+    reply: Option<oneshot::Sender<DispatchOutcome>>,
+) {
     let result = modem.send(to, body).await;
-    match result.status {
+    let outcome = match result.status {
         MessageStatus::Sent => {
             let reference = result.reference.map(|r| r.to_string());
             let _ = db
                 .update_outbound_message(id, MessageStatus::Sent, reference.as_deref(), None)
                 .await;
+            DispatchOutcome {
+                status: MessageStatus::Sent,
+                reference,
+            }
         }
         MessageStatus::Failed => {
             let detail = result
@@ -491,8 +635,51 @@ async fn dispatch_send<M: ModemPort>(db: &Db, modem: &M, id: i64, to: String, bo
             let _ = db
                 .update_outbound_message(id, MessageStatus::Failed, None, detail.as_deref())
                 .await;
+            DispatchOutcome {
+                status: MessageStatus::Failed,
+                reference: None,
+            }
         }
-        MessageStatus::Queued => {}
+        MessageStatus::Queued => DispatchOutcome {
+            status: MessageStatus::Queued,
+            reference: None,
+        },
+    };
+
+    if outcome.status != MessageStatus::Queued {
+        events.publish(ServiceEvent::MessageStatus(MessageStatusEvent {
+            id,
+            status: outcome.status,
+            reference: outcome.reference.clone(),
+        }));
+    }
+
+    if let Some(reply) = reply {
+        let _ = reply.send(outcome);
+    }
+}
+
+/// Streams real-time service events to the client as Server-Sent Events.
+///
+/// Each connected client receives a private subscription to the event bus.
+/// Outbound `message_status` transitions and `inbound_sms` arrivals are
+/// emitted as named SSE events with a JSON `data` payload. Clients that fall
+/// behind the broadcast buffer silently skip the dropped events.
+async fn events_handler<M: ModemPort>(
+    State(state): State<ApiState<M>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.events.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|item| {
+        let event = item.ok()?;
+        sse_event(&event).ok().map(Ok)
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+fn sse_event(event: &ServiceEvent) -> Result<Event, axum::Error> {
+    match event {
+        ServiceEvent::MessageStatus(payload) => Event::default().event(event.name()).json_data(payload),
+        ServiceEvent::InboundSms(payload) => Event::default().event(event.name()).json_data(payload),
     }
 }
 
@@ -840,7 +1027,9 @@ mod tests {
             },
         };
 
-        dispatch_send(&db, &modem, created.id, "+14155552671".into(), "hi".into()).await;
+        let events = EventBus::default();
+        dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
+            .await;
 
         let stored = db.get_outbound_message(created.id).await.unwrap().unwrap();
         assert_eq!(stored.status, MessageStatus::Sent);
@@ -864,7 +1053,9 @@ mod tests {
             },
         };
 
-        dispatch_send(&db, &modem, created.id, "+14155552671".into(), "hi".into()).await;
+        let events = EventBus::default();
+        dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
+            .await;
 
         let stored = db.get_outbound_message(created.id).await.unwrap().unwrap();
         assert_eq!(stored.status, MessageStatus::Failed);
@@ -883,7 +1074,9 @@ mod tests {
             result: queued_result(),
         };
 
-        dispatch_send(&db, &modem, created.id, "+14155552671".into(), "hi".into()).await;
+        let events = EventBus::default();
+        dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
+            .await;
 
         let stored = db.get_outbound_message(created.id).await.unwrap().unwrap();
         assert_eq!(stored.status, MessageStatus::Queued);

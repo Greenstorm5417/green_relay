@@ -26,6 +26,8 @@ pub mod config;
 pub mod db;
 /// Error module.
 pub mod error;
+/// Real-time event broadcast module.
+pub mod events;
 /// Health module.
 pub mod health;
 /// Logging module.
@@ -62,11 +64,18 @@ impl admin::ModemStatusProvider for ModemHandleStatusProvider {
     }
 }
 
-fn build_router(config: &config::Config, db: db::Db, modem: ModemHandle) -> axum::Router {
-    let api_state = api::ApiState::new(db.clone(), modem.clone()).with_rate_config(
-        config.default_rate_limit,
-        Duration::from_secs(config.rate_window_secs),
-    );
+fn build_router(
+    config: &config::Config,
+    db: db::Db,
+    modem: ModemHandle,
+    events: events::EventBus,
+) -> axum::Router {
+    let api_state = api::ApiState::new(db.clone(), modem.clone())
+        .with_rate_config(
+            config.default_rate_limit,
+            Duration::from_secs(config.rate_window_secs),
+        )
+        .with_events(events);
 
     let modem_provider: Arc<dyn admin::ModemStatusProvider> =
         Arc::new(ModemHandleStatusProvider(modem));
@@ -184,14 +193,17 @@ pub async fn run() -> Result<(), RunError> {
         .map_err(RunError::Db)?;
     db.run_migrations().await.map_err(RunError::Db)?;
 
+    let events = events::EventBus::default();
+
     let (modem_handle, modem_endpoint) = modem::new_modem(MODEM_CHANNEL_BUFFER);
     let modem_task = tokio::spawn(modem::run_modem_manager(
         config.clone(),
         db.clone(),
         modem_endpoint,
+        events.clone(),
     ));
 
-    let app = build_router(&config, db.clone(), modem_handle.clone());
+    let app = build_router(&config, db.clone(), modem_handle.clone(), events);
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr)
         .await

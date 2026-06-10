@@ -25,6 +25,10 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
+# `BroadcastStream` adapts the event-bus broadcast receiver into the `Stream`
+# the Axum SSE responder consumes. The `sync` feature gates exactly that
+# wrapper; pinned to the current 0.1 line maintained alongside Tokio.
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 axum = "0.8.9"
 tower = "0.5.3"
 # Static-file serving for the bundled web UI; only compiled with `web-ui`.
