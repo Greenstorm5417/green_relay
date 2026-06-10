@@ -33,7 +33,9 @@ impl KeyStore for AlwaysActive {
     }
 }
 
-/// A representative API key (high-entropy, like the admin-issued `sk_` keys).
+/// A representative high-entropy API key sample, shaped like the keys the admin
+/// panel issues. The `grk_sample_` prefix keeps it from resembling any real
+/// provider's secret-key format.
 const SAMPLE_KEY: &str = "grk_sample_3f8a9c2e1b7d4655a0c9f2e8b1d6473a9e5c8f2a1b3d6e7f";
 
 fn bench_key_identifier(c: &mut Criterion) {
