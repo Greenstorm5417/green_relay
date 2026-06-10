@@ -1,0 +1,119 @@
+name: Release
+
+# Runs on a version-bump tag (e.g. v1.2.3). Builds Debian packages and
+# binaries for x86_64 + ARM, publishes them to a GitHub Release, regenerates
+# the OpenAPI spec, and deploys the Swagger UI docs to GitHub Pages.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            cross: false
+          # 32-bit Raspberry Pi OS. Cross-compiled; best-effort.
+          - target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-latest
+            cross: true
+            experimental: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: service
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Install native build dependencies
+        if: ${{ !matrix.cross }}
+        run: sudo apt-get update && sudo apt-get install --assume-yes libudev-dev pkg-config
+      - name: Install cross
+        if: ${{ matrix.cross }}
+        run: cargo install cross --locked
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        working-directory: service
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build (cross)
+        if: ${{ matrix.cross }}
+        working-directory: service
+        run: cross build --release --target ${{ matrix.target }}
+      - name: Package .deb
+        working-directory: service
+        run: cargo deb --no-build --no-strip --target ${{ matrix.target }}
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp "service/target/${{ matrix.target }}/release/green_relay" "dist/green_relay-${{ matrix.target }}"
+          cp service/target/${{ matrix.target }}/debian/*.deb dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install --assume-yes libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: service
+      - name: Assemble docs site
+        run: |
+          mkdir -p site
+          cp docs/index.html site/index.html
+          (cd service && cargo run --quiet --bin green_relay -- openapi) > site/openapi.json
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

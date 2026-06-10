@@ -2,6 +2,38 @@
 name = "green_relay"
 version = "0.1.0"
 edition = "2024"
+description = "SMS microservice for a Waveshare SIM7600X modem: authenticated REST API, real-time SSE event stream, and an admin dashboard."
+license = "MIT"
+repository = "https://github.com/OWNER/sms_micro_service"
+readme = "../README.md"
+
+# Debian package metadata, consumed by `cargo deb`. Produces a `.deb` that
+# installs the binary, an example config, and a systemd unit.
+[package.metadata.deb]
+maintainer = "Green Relay Maintainers <maintainers@example.com>"
+copyright = "2025 Green Relay Maintainers"
+section = "comm"
+priority = "optional"
+extended-description = """\
+Green Relay is an asynchronous Rust daemon that sends and receives SMS through \
+a Waveshare SIM7600X 4G USB modem over AT commands. It exposes an \
+API-key-authenticated REST API, a real-time Server-Sent Events stream, and an \
+Argon2-secured admin dashboard, persisting state in SQLite."""
+# `$auto` lets cargo-deb compute shared-library dependencies from the binary.
+depends = "$auto"
+assets = [
+    ["target/release/green_relay", "usr/bin/green_relay", "755"],
+    ["../config.example.yaml", "etc/green_relay/config.example.yaml", "644"],
+]
+conf-files = ["/etc/green_relay/config.example.yaml"]
+
+# Install and enable the systemd unit from `service/systemd/`.
+[package.metadata.deb.systemd-units]
+unit-scripts = "systemd"
+unit-name = "green_relay"
+enable = true
+start = false
+
 
 # Library target exposes the crate internals so the integration tests under
 # `tests/` and the benches under `benches/` can drive them; the binary is a

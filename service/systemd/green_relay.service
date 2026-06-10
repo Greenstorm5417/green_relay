@@ -1,0 +1,35 @@
+[Unit]
+Description=Green Relay SMS microservice
+Documentation=https://github.com/OWNER/sms_micro_service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Load configuration from /etc/green_relay/config.yaml. Copy the shipped
+# config.example.yaml there and edit it before first start.
+Environment=SMS_CONFIG_FILE=/etc/green_relay/config.yaml
+ExecStart=/usr/bin/green_relay
+Restart=on-failure
+RestartSec=5
+
+# Run under a transient, unprivileged system user with private state under
+# /var/lib/green_relay (resolves the default relative DATABASE_PATH there).
+DynamicUser=yes
+StateDirectory=green_relay
+WorkingDirectory=/var/lib/green_relay
+# Grant access to the modem's serial device (e.g. /dev/ttyUSB2).
+SupplementaryGroups=dialout
+
+# Hardening.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+ReadWritePaths=/var/lib/green_relay
+
+[Install]
+WantedBy=multi-user.target

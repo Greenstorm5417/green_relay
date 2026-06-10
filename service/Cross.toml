@@ -1,0 +1,36 @@
+# Cross-compilation configuration for `cross` (https://github.com/cross-rs/cross).
+#
+# The `serialport` crate (via tokio-serial) links libudev on Linux, so the
+# build container needs the target-architecture libudev plus a cross-aware
+# pkg-config. These targets are only used for builds that cannot run on a
+# native runner (e.g. 32-bit armv7 for older Raspberry Pi boards); aarch64 and
+# x86_64 are built natively in CI.
+
+[build.env]
+passthrough = ["PKG_CONFIG_ALLOW_CROSS=1"]
+
+[target.armv7-unknown-linux-gnueabihf]
+pre-build = [
+    "dpkg --add-architecture armhf",
+    "apt-get update",
+    "apt-get install --assume-yes libudev-dev:armhf pkg-config",
+]
+
+[target.armv7-unknown-linux-gnueabihf.env]
+passthrough = [
+    "PKG_CONFIG_ALLOW_CROSS=1",
+    "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig",
+]
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update",
+    "apt-get install --assume-yes libudev-dev:arm64 pkg-config",
+]
+
+[target.aarch64-unknown-linux-gnu.env]
+passthrough = [
+    "PKG_CONFIG_ALLOW_CROSS=1",
+    "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig",
+]
