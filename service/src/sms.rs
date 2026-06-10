@@ -1,4 +1,3 @@
-
 pub const MAX_BODY_CHARS: usize = 1530;
 
 const E164_MIN_DIGITS: usize = 7;
@@ -59,8 +58,8 @@ mod validation_tests {
     #[test]
     fn accepts_valid_e164_numbers() {
         assert_eq!(validate_e164("+14155552671"), Ok(()));
-        assert_eq!(validate_e164("+1234567"), Ok(())); 
-        assert_eq!(validate_e164("+123456789012345"), Ok(())); 
+        assert_eq!(validate_e164("+1234567"), Ok(()));
+        assert_eq!(validate_e164("+123456789012345"), Ok(()));
     }
 
     #[test]
@@ -69,30 +68,30 @@ mod validation_tests {
         assert_eq!(
             validate_e164("14155552671"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); 
+        );
         assert_eq!(
             validate_e164("+123456"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); 
+        );
         assert_eq!(
             validate_e164("+1234567890123456"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); 
+        );
         assert_eq!(
             validate_e164("+1415555267a"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); 
+        );
         assert_eq!(
             validate_e164("+1 4155552671"),
             Err(ValidationError::InvalidPhoneNumber)
-        ); 
-        assert_eq!(validate_e164("+"), Err(ValidationError::InvalidPhoneNumber)); 
+        );
+        assert_eq!(validate_e164("+"), Err(ValidationError::InvalidPhoneNumber));
     }
 
     #[test]
     fn validates_body_length_bounds() {
-        assert_eq!(validate_body("a"), Ok(())); 
-        assert_eq!(validate_body(&"x".repeat(MAX_BODY_CHARS)), Ok(())); 
+        assert_eq!(validate_body("a"), Ok(()));
+        assert_eq!(validate_body(&"x".repeat(MAX_BODY_CHARS)), Ok(()));
         assert_eq!(validate_body(""), Err(ValidationError::BodyEmpty));
         assert_eq!(
             validate_body(&"x".repeat(MAX_BODY_CHARS + 1)),
@@ -102,7 +101,6 @@ mod validation_tests {
 
     #[test]
     fn body_length_counts_characters_not_bytes() {
-        
         let multibyte = "é".repeat(MAX_BODY_CHARS);
         assert_eq!(validate_body(&multibyte), Ok(()));
         assert_eq!(
@@ -143,9 +141,8 @@ const MAX_PARTS: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
-    
     pub seq: u8,
-    
+
     pub text: String,
 }
 
@@ -242,13 +239,13 @@ mod segment_tests {
         let body = "a".repeat(161);
         let segs = segment_message(&body).unwrap();
         assert_eq!(segs.len(), 2);
-        
+
         assert_eq!(segs[0].text.chars().count(), 153);
         assert_eq!(segs[1].text.chars().count(), 8);
-        
+
         assert_eq!(segs[0].seq, 1);
         assert_eq!(segs[1].seq, 2);
-        
+
         let joined: String = segs.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(joined, body);
     }
@@ -268,7 +265,6 @@ mod segment_tests {
 
     #[test]
     fn too_many_parts_errors() {
-        
         let body = "€".repeat(1530);
         let err = segment_message(&body).unwrap_err();
         match err {
@@ -278,10 +274,9 @@ mod segment_tests {
 
     #[test]
     fn extension_chars_count_as_two_septets() {
-        
         let body = "€".repeat(80);
         assert_eq!(segment_message(&body).unwrap().len(), 1);
-        
+
         let body = "€".repeat(81);
         assert!(segment_message(&body).unwrap().len() > 1);
     }
@@ -289,15 +284,15 @@ mod segment_tests {
     #[test]
     fn build_cmgs_contains_number_and_terminator() {
         let payload = build_cmgs("+14155552671", "hi there");
-        
+
         assert_eq!(*payload.last().unwrap(), 0x1A);
-        
+
         let needle = b"+14155552671";
         assert!(
             payload.windows(needle.len()).any(|w| w == needle),
             "payload should contain the phone number"
         );
-        
+
         let part = b"hi there";
         assert!(payload.windows(part.len()).any(|w| w == part));
     }

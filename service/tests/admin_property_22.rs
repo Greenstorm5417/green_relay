@@ -6,8 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use proptest::prelude::*;
 use green_relay::admin::{SESSION_IDLE_TIMEOUT, Session, session_valid};
+use proptest::prelude::*;
 
 /// The idle timeout, in milliseconds, used as the validity boundary.
 const TIMEOUT_MS: u64 = SESSION_IDLE_TIMEOUT.as_millis() as u64;

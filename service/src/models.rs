@@ -1,4 +1,3 @@
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -6,16 +5,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageStatus {
-    
     Queued,
-    
+
     Sent,
-    
+
     Failed,
 }
 
 impl MessageStatus {
-    
     /// Returns the string representation of the message status used in the database.
     pub fn as_db_str(&self) -> &'static str {
         match self {
@@ -39,31 +36,30 @@ impl MessageStatus {
 /// Represents an outgoing SMS message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OutboundMessage {
-    
     /// The unique identifier of the message.
     pub id: i64,
-    
+
     /// The recipient's phone number.
     pub to_number: String,
-    
+
     /// The body text of the message.
     pub body: String,
-    
+
     /// The current delivery status of the message.
     pub status: MessageStatus,
-    
+
     /// The number of parts/segments the message is split into.
     pub part_count: u8,
-    
+
     /// The reference assigned by the network/modem.
     pub msg_reference: Option<String>,
-    
+
     /// The error code if sending failed.
     pub error_code: Option<String>,
-    
+
     /// The timestamp when the message was created.
     pub created_at: DateTime<Utc>,
-    
+
     /// The timestamp when the message was last updated.
     pub updated_at: DateTime<Utc>,
 }
@@ -71,16 +67,15 @@ pub struct OutboundMessage {
 /// Represents an incoming SMS message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct InboundMessage {
-    
     /// The unique identifier of the message.
     pub id: i64,
-    
+
     /// The sender's phone number.
     pub from_number: String,
-    
+
     /// The body text of the message.
     pub body: String,
-    
+
     /// The timestamp when the message was received.
     pub received_at: DateTime<Utc>,
 }
@@ -88,22 +83,21 @@ pub struct InboundMessage {
 /// Represents an API key used for authentication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKey {
-    
     /// The unique identifier of the API key.
     pub id: i64,
-    
+
     /// The hash of the API key.
     pub key_hash: String,
-    
+
     /// A non-sensitive identifier for the API key.
     pub key_identifier: String,
-    
+
     /// An optional custom rate limit for the API key.
     pub custom_rate_limit: Option<u32>,
-    
+
     /// Indicates if the API key has been revoked.
     pub revoked: bool,
-    
+
     /// The timestamp when the API key was created.
     pub created_at: DateTime<Utc>,
 }

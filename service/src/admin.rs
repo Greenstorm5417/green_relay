@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -855,10 +854,7 @@ async fn api_session(State(state): State<AdminState>, headers: HeaderMap) -> Res
 }
 
 /// `POST /api/admin/login` — authenticate and set the session cookie.
-async fn api_login(
-    State(state): State<AdminState>,
-    Json(body): Json<ApiLoginRequest>,
-) -> Response {
+async fn api_login(State(state): State<AdminState>, Json(body): Json<ApiLoginRequest>) -> Response {
     match perform_login(
         &state,
         &body.username,

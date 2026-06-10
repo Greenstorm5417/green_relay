@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -8,14 +7,12 @@ pub const CUSTOM_LIMIT_MAX: u32 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowState {
-    
     pub count: u32,
-    
+
     pub window_start: Instant,
 }
 
 impl WindowState {
-    
     pub fn new(now: Instant) -> Self {
         WindowState {
             count: 0,
@@ -26,21 +23,13 @@ impl WindowState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RateDecision {
-    
-    Allow {
-        
-        remaining: u32,
-    },
-    
-    Reject {
-        
-        retry_after_secs: u64,
-    },
+    Allow { remaining: u32 },
+
+    Reject { retry_after_secs: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitConfigError {
-    
     pub configured: u32,
 }
 
@@ -100,7 +89,6 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
-    
     pub fn new() -> Self {
         RateLimiter {
             states: HashMap::new(),
@@ -168,7 +156,7 @@ mod tests {
             }
             other => panic!("expected reject, got {other:?}"),
         }
-        
+
         assert_eq!(state.count, 3);
     }
 
@@ -192,7 +180,7 @@ mod tests {
     fn retry_after_is_within_window_bound() {
         let start = Instant::now();
         let window = Duration::from_secs(60);
-        
+
         let mut state = WindowState {
             count: 1,
             window_start: start,
@@ -200,7 +188,6 @@ mod tests {
         let now = start + Duration::from_secs(1);
         match decide(&mut state, 1, window, now) {
             RateDecision::Reject { retry_after_secs } => {
-                
                 assert_eq!(retry_after_secs, 59);
             }
             other => panic!("expected reject, got {other:?}"),
@@ -247,12 +234,12 @@ mod tests {
         for _ in 0..5 {
             limiter.check("a", 100, window, now);
         }
-        
+
         limiter.check("b", 100, window, now);
 
         assert_eq!(limiter.count_for("a"), 5);
         assert_eq!(limiter.count_for("b"), 1);
-        
+
         assert_eq!(limiter.count_for("c"), 0);
     }
 }

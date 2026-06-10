@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use proptest::prelude::*;
 use green_relay::config::merge_env_over_file;
+use proptest::prelude::*;
 
 /// Generate a small key from a constrained alphabet so that the file and
 /// environment maps share keys frequently enough to exercise the override

@@ -5,8 +5,8 @@
 //! public `format_cmgr_response` / `parse_cmgr` pair of the
 //! `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::modem::{ParsedInbound, format_cmgr_response, parse_cmgr};
+use proptest::prelude::*;
 
 /// Independent oracle mirroring the modem's terminating-result-code grammar.
 ///

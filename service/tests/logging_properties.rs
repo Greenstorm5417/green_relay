@@ -4,8 +4,8 @@
 //! `src/logging.rs`) per the spec's test-placement note, and exercise the
 //! public `LogRecord` API of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::logging::{LogRecord, Severity};
+use proptest::prelude::*;
 
 /// The canonical set of severity strings allowed by Req 7.1.
 const ALLOWED_SEVERITIES: [&str; 5] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];

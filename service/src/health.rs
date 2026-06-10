@@ -1,17 +1,14 @@
-
 /// Represents the status of the SIM card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimStatus {
-    
     Ready,
-    
+
     NotReady,
-    
+
     Unknown,
 }
 
 impl SimStatus {
-    
     /// Returns true if the SIM status is ready.
     pub fn is_ready(self) -> bool {
         matches!(self, SimStatus::Ready)
@@ -21,33 +18,31 @@ impl SimStatus {
 /// Represents the overall health status of the service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceHealth {
-    
     Healthy,
-    
+
     Degraded,
-    
+
     Unhealthy,
 }
 
 /// A snapshot of the current modem status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModemStatusSnapshot {
-    
     /// Indicates if the serial connection is active.
     pub serial_connected: bool,
-    
+
     /// The status of the SIM card.
     pub sim_status: SimStatus,
-    
+
     /// Indicates if the modem is registered on a network.
     pub registered: bool,
-    
+
     /// Indicates if the modem is responsive to commands.
     pub responsive: bool,
-    
+
     /// The signal strength percentage.
     pub signal_percent: Option<u8>,
-    
+
     /// The network operator name.
     pub operator: Option<String>,
 }
@@ -69,13 +64,9 @@ pub const DEFAULT_RETRY_AFTER_SECS: u64 = 30;
 /// The outcome of checking message deliverability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliverabilityOutcome {
-    
     Deliverable,
-    
-    Rejected {
-        
-        retry_after_secs: u64,
-    },
+
+    Rejected { retry_after_secs: u64 },
 }
 
 /// Determines message deliverability based on modem status.

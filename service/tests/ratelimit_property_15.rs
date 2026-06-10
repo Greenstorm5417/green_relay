@@ -6,8 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use proptest::prelude::*;
 use green_relay::ratelimit::{RateDecision, WindowState, decide};
+use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]

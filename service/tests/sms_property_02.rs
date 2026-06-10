@@ -4,8 +4,8 @@
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
 //! `validate_body` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::sms::{MAX_BODY_CHARS, validate_body};
+use proptest::prelude::*;
 
 /// Independent oracle for the body-length rule, written separately from the
 /// implementation so the property checks the implementation against the

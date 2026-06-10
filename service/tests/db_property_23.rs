@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, TimeZone, Utc};
-use proptest::prelude::*;
 use green_relay::db::Db;
 use green_relay::models::MessageStatus;
+use proptest::prelude::*;
 
 /// Monotonic counter giving every database a unique on-disk filename so
 /// concurrent or repeated cases never share state.

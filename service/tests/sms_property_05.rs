@@ -4,8 +4,8 @@
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
 //! `build_cmgs` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::sms::build_cmgs;
+use proptest::prelude::*;
 
 /// The control byte (Ctrl-Z) that terminates an `AT+CMGS` payload and
 /// instructs the modem to transmit the message (Req 1.3).

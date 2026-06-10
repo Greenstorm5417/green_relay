@@ -8,10 +8,10 @@
 
 use std::time::{Duration, Instant};
 
-use proptest::prelude::*;
 use green_relay::auth::{
     LOCKOUT_DURATION, LOCKOUT_FAILURE_THRESHOLD, LOCKOUT_WINDOW, is_locked_out, lockout_until,
 };
+use proptest::prelude::*;
 
 /// Window length, in seconds, over which failures are counted (Req 3.8: 60 s).
 const WINDOW_SECS: u64 = 60;

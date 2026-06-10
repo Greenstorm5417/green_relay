@@ -4,8 +4,8 @@
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
 //! `segment_message` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::sms::{SegmentError, segment_message};
+use proptest::prelude::*;
 
 /// Per-part GSM-7 budget for a concatenated (multi-part) SMS.
 const MULTI_PART_MAX: usize = 153;

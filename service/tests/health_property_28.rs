@@ -4,8 +4,8 @@
 //! `src/health.rs`) per the spec's test-placement note, and exercises the
 //! public `derive_health` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::health::{ModemStatusSnapshot, ServiceHealth, SimStatus, derive_health};
+use proptest::prelude::*;
 
 /// Strategy over all three SIM states so the "not READY" branch is covered by
 /// both `NotReady` and `Unknown`.

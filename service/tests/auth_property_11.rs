@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use proptest::prelude::*;
 use green_relay::auth::key_identifier;
+use proptest::prelude::*;
 
 /// Expected length, in characters, of a SHA-256 hex identifier.
 const SHA256_HEX_LEN: usize = 64;

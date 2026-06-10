@@ -4,8 +4,8 @@
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
 //! `validate_e164` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::sms::validate_e164;
+use proptest::prelude::*;
 
 /// Independent oracle for the E.164 grammar, written separately from the
 /// implementation so the property checks the implementation against the

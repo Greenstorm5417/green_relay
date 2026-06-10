@@ -1,4 +1,3 @@
-
 pub const RECONNECT_BACKOFF_CAP_SECS: u64 = 60;
 
 pub fn reconnect_backoff_secs(attempt: u32) -> u64 {
@@ -28,7 +27,6 @@ pub enum AtResult {
 }
 
 impl AtResult {
-    
     pub fn is_ok(&self) -> bool {
         matches!(self, AtResult::Ok)
     }
@@ -401,7 +399,6 @@ pub struct ModemHandle {
 }
 
 impl ModemHandle {
-    
     pub async fn send_sms(&self, to: &str, body: &str) -> SendResult {
         let (reply, rx) = oneshot::channel();
         let request = ModemRequest::SendSms {
@@ -478,7 +475,6 @@ pub fn new_modem(buffer: usize) -> (ModemHandle, ModemEndpoint) {
 }
 
 pub trait SerialTransport: Send {
-    
     fn write_bytes(&mut self, data: &[u8]) -> impl Future<Output = io::Result<()>> + Send;
 
     fn read_line(
@@ -493,7 +489,6 @@ pub struct SerialPortTransport {
 }
 
 impl SerialPortTransport {
-    
     pub fn new(stream: SerialStream) -> Self {
         SerialPortTransport {
             stream,
@@ -804,7 +799,6 @@ async fn handle_inbound_inner<T: SerialTransport>(
             }
         }
         Err(e) => {
-            
             audit(
                 db,
                 "inbound_persist_failed",
@@ -927,7 +921,7 @@ pub async fn handle_send<T: SerialTransport>(
         let result = send_part_with_retries(t, cfg, db, to, &segment.text).await?;
         match result.status {
             MessageStatus::Sent => last_reference = result.reference,
-            
+
             _ => return Ok(result),
         }
     }
@@ -971,9 +965,8 @@ async fn handle_request<T: SerialTransport>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionOutcome {
-    
     ChannelClosed,
-    
+
     Disconnected,
 }
 
@@ -1102,7 +1095,6 @@ pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint, eve
                 }
             }
             Err(e) => {
-                
                 tracing::error!(error = %e, port = %cfg.serial_port, "failed to open serial port");
                 mark_disconnected(&status);
             }

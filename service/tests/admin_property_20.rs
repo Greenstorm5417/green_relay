@@ -6,10 +6,10 @@
 
 use std::time::{Duration, Instant};
 
-use proptest::prelude::*;
 use green_relay::admin::{
     ADMIN_FAILURE_WINDOW, ADMIN_LOCK_DURATION, ADMIN_MAX_FAILURES, admin_locked,
 };
+use proptest::prelude::*;
 
 /// Seconds in the 15-minute failure window and lock duration (Req 5.5).
 const WINDOW_SECS: u64 = 15 * 60;

@@ -10,8 +10,8 @@
 //! This lives in its own integration-test file (separate from `src/logging.rs`)
 //! and exercises the public API only.
 
-use proptest::prelude::*;
 use green_relay::logging::{LogRecord, Severity};
+use proptest::prelude::*;
 
 /// Canonical rank of a severity per Req 7.1 ordering
 /// `TRACE < DEBUG < INFO < WARN < ERROR`. This is an *independent* oracle: it

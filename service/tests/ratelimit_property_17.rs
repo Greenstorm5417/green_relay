@@ -6,8 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use proptest::prelude::*;
 use green_relay::ratelimit::RateLimiter;
+use proptest::prelude::*;
 
 /// Generate two distinct key strings. The second is derived from the first by
 /// appending a marker so the two are guaranteed to differ regardless of the

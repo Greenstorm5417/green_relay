@@ -65,23 +65,22 @@ pub const KNOWN_KEYS: &[&str] = &[
 pub enum LogLevel {
     /// Verbose developer tracing.
     Trace,
-    
+
     /// Diagnostic information.
     Debug,
-    
+
     /// General application info.
     #[default]
     Info,
-    
+
     /// Warning messages.
     Warn,
-    
+
     /// Critical errors.
     Error,
 }
 
 impl LogLevel {
-    
     /// Parses a string slice into a LogLevel.
     pub fn parse(s: &str) -> Option<LogLevel> {
         match s.trim().to_ascii_uppercase().as_str() {
@@ -111,37 +110,37 @@ impl LogLevel {
 pub struct Config {
     /// The socket address to listen on.
     pub listen_addr: SocketAddr,
-    
+
     /// The path to the cellular modem's serial port.
     pub serial_port: String,
-    
+
     /// The baud rate for the serial port communication.
     pub baud_rate: u32,
-    
+
     /// The path to the SQLite database.
     pub database_path: String,
-    
+
     /// The SMS service center number (SMSC), if explicitly configured.
     pub service_center_number: Option<String>,
-    
+
     /// The cellular modem AT command timeout in seconds.
     pub at_timeout_secs: u64,
-    
+
     /// The default API key rate limit (requests per window).
     pub default_rate_limit: u32,
-    
+
     /// The rate limiting time window in seconds.
     pub rate_window_secs: u64,
-    
+
     /// The configured logging level.
     pub log_level: LogLevel,
-    
+
     /// The maximum attempts to reopen a closed serial port.
     pub reopen_max_attempts: u32,
-    
+
     /// The maximum attempts to send an outbound message.
     pub send_max_attempts: u32,
-    
+
     /// The delay in seconds between message send retries.
     pub send_retry_delay_secs: u64,
 }
@@ -176,7 +175,7 @@ pub fn parse_config_file(contents: &str) -> Result<HashMap<String, String>, Stri
                     Some(text) => {
                         map.insert(key, text);
                     }
-                    
+
                     None if val.is_null() => {}
                     None => {
                         return Err(format!(
@@ -201,7 +200,6 @@ fn scalar_to_string(value: &serde_yaml::Value) -> Option<String> {
 }
 
 impl Config {
-    
     /// Parses configuration fields from a map of string values.
     pub fn from_map(map: &HashMap<String, String>) -> Result<Config, ConfigError> {
         let listen_addr_raw = require(map, KEY_LISTEN_ADDR)?;
@@ -376,12 +374,10 @@ fn file_map() -> Result<HashMap<String, String>, ConfigError> {
     let path = explicit.clone().unwrap_or_else(default_config_path);
 
     match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            parse_config_file(&contents).map_err(|reason| ConfigError::FileRead {
-                path: path.clone(),
-                reason,
-            })
-        }
+        Ok(contents) => parse_config_file(&contents).map_err(|reason| ConfigError::FileRead {
+            path: path.clone(),
+            reason,
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && explicit.is_none() => {
             Ok(HashMap::new())
         }
@@ -621,7 +617,6 @@ mod tests {
 
     #[test]
     fn yaml_empty_file_is_empty_map() {
-        
         assert!(parse_config_file("").expect("empty parses").is_empty());
         assert!(
             parse_config_file("# only a comment\n")
@@ -643,7 +638,7 @@ SERVICE_CENTER_NUMBER: \"+14155550000\"
             map.get(KEY_LISTEN_ADDR).map(String::as_str),
             Some("0.0.0.0:8080")
         );
-        
+
         assert_eq!(map.get(KEY_BAUD_RATE).map(String::as_str), Some("115200"));
         assert_eq!(
             map.get(KEY_SEND_RETRY_DELAY_SECS).map(String::as_str),
@@ -671,12 +666,14 @@ LISTEN_ADDR:
   port: 8080
 ";
         let err = parse_config_file(yaml).expect_err("nested mapping must be rejected");
-        assert!(err.contains("LISTEN_ADDR"), "reason should name the key: {err}");
+        assert!(
+            err.contains("LISTEN_ADDR"),
+            "reason should name the key: {err}"
+        );
     }
 
     #[test]
     fn yaml_non_mapping_is_rejected() {
-        
         parse_config_file("- one\n- two\n").expect_err("sequence must be rejected");
     }
 }

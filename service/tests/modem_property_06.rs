@@ -5,9 +5,9 @@
 //! public `format_cmgs_response`, `parse_cmgs_reference`, and
 //! `parse_send_outcome` functions of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::models::MessageStatus;
 use green_relay::modem::{format_cmgs_response, parse_cmgs_reference, parse_send_outcome};
+use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]

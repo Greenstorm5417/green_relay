@@ -5,9 +5,9 @@
 //! public `classify_line` terminator classifier plus `parse_send_outcome`
 //! error-code mapping of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::models::MessageStatus;
 use green_relay::modem::{AtResult, LineClass, classify_line, parse_send_outcome};
+use proptest::prelude::*;
 
 /// Independent oracle for the terminator classifier, written separately from
 /// the implementation so the property checks the implementation against the

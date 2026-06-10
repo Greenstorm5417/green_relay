@@ -25,10 +25,10 @@ pub const LOCKOUT_DURATION: Duration = Duration::from_secs(300);
 pub enum AuthOutcome {
     /// Authentication succeeded with the given API key identifier.
     Authorized(ApiKeyId),
-    
+
     /// Authentication failed.
     Unauthorized,
-    
+
     /// Authentication is locked out due to too many failures.
     LockedOut,
 }
@@ -95,7 +95,6 @@ pub struct FailureTracker {
 }
 
 impl FailureTracker {
-    
     /// Creates a new empty failure tracker.
     pub fn new() -> Self {
         FailureTracker {
@@ -169,10 +168,10 @@ pub fn authenticate_identified<S: KeyStore + ?Sized>(
 pub enum AuthResult {
     /// Successfully authorized.
     Authorized,
-    
+
     /// Unauthorized.
     Unauthorized,
-    
+
     /// Locked out.
     LockedOut,
 }
@@ -190,16 +189,15 @@ impl From<&AuthOutcome> for AuthResult {
 /// Represents an audit log record for an authentication event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuthAuditRecord {
-    
     /// The type of authentication event.
     pub event_type: &'static str,
-    
+
     /// The outcome result of the check.
     pub result: AuthResult,
-    
+
     /// The identifier of the checked key.
     pub key_identifier: String,
-    
+
     /// The timestamp of the authentication event.
     pub timestamp: DateTime<Utc>,
 }
@@ -269,7 +267,6 @@ mod tests {
 
     #[test]
     fn key_identifier_matches_known_sha256_vector() {
-        
         assert_eq!(
             key_identifier(""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -320,7 +317,7 @@ mod tests {
             authenticate(&overlong, &store, &mut tracker, now),
             AuthOutcome::Unauthorized
         );
-        
+
         assert!(tracker.failures.is_empty());
     }
 
@@ -358,7 +355,7 @@ mod tests {
     fn failures_outside_window_do_not_lock_out() {
         let mut times = Vec::new();
         let base = Instant::now();
-        
+
         for i in 0..5 {
             times.push(base + Duration::from_secs(i * 70));
         }
@@ -370,7 +367,7 @@ mod tests {
     fn lockout_until_returns_trigger_plus_duration() {
         let base = Instant::now();
         let times: Vec<Instant> = (0..5).map(|i| base + Duration::from_secs(i * 5)).collect();
-        
+
         let expected = base + Duration::from_secs(20) + LOCKOUT_DURATION;
         assert_eq!(lockout_until(&times), Some(expected));
     }
@@ -380,12 +377,12 @@ mod tests {
         let store = MapStore::with_key("good", 1);
         let mut tracker = FailureTracker::new();
         let base = Instant::now();
-        
+
         let id = key_identifier("good");
         for i in 0..4 {
             tracker.record_failure(&id, base + Duration::from_secs(i));
         }
-        
+
         assert_eq!(
             authenticate("good", &store, &mut tracker, base + Duration::from_secs(5)),
             AuthOutcome::Authorized(1)

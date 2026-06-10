@@ -12,8 +12,8 @@
 //! and exercises the public API only.
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use proptest::prelude::*;
 use green_relay::admin::{ActivityEntry, RECENT_ACTIVITY_LIMIT, recent_activity};
+use proptest::prelude::*;
 
 /// A fixed reference "now" used as the selection cutoff. Using a fixed instant
 /// (rather than the wall clock) keeps cases deterministic and reproducible.

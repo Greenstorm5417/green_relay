@@ -8,8 +8,8 @@
 //! Argon2 is intentionally expensive, so the case count is kept near the
 //! 100-iteration minimum.
 
-use proptest::prelude::*;
 use green_relay::admin::{hash_password, verify_password};
+use proptest::prelude::*;
 
 /// Generate an arbitrary password string, including the empty string and
 /// strings containing arbitrary unicode, so the property holds across the

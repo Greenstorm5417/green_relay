@@ -270,7 +270,10 @@ async fn sync_send_rejects_invalid_phone() {
     ));
 
     let resp = app
-        .oneshot(post_sync(Some("sync-key"), r#"{"to":"not-e164","body":"hi"}"#))
+        .oneshot(post_sync(
+            Some("sync-key"),
+            r#"{"to":"not-e164","body":"hi"}"#,
+        ))
         .await
         .unwrap();
 

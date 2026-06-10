@@ -5,10 +5,10 @@
 //! `reconnect_backoff_secs` / `reconnect_backoff_schedule` functions of the
 //! `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::modem::{
     RECONNECT_BACKOFF_CAP_SECS, reconnect_backoff_schedule, reconnect_backoff_secs,
 };
+use proptest::prelude::*;
 
 /// Reference implementation of the expected delay for attempt `n` (1-indexed):
 /// `min(2^(n-1), 60)` seconds, computed with overflow-safe arithmetic so the

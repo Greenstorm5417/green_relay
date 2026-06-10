@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 
 use chrono::Utc;
@@ -33,7 +32,6 @@ pub enum Severity {
 }
 
 impl Severity {
-    
     /// An array of all severity levels.
     pub const ALL: [Severity; 5] = [
         Severity::Trace,
@@ -82,16 +80,14 @@ impl From<Severity> for tracing::Level {
 /// A structured log record containing metadata and key-value fields.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord {
-    
     timestamp: String,
     severity: Severity,
     message: String,
-    
+
     fields: BTreeMap<String, Value>,
 }
 
 impl LogRecord {
-    
     /// Creates a new log record with the current timestamp.
     pub fn new(severity: Severity, message: impl Into<String>) -> Self {
         Self::with_timestamp(severity, message, Self::now_timestamp())
@@ -170,7 +166,6 @@ impl LogRecord {
 
     /// Converts the log record to a JSON string.
     pub fn to_json_string(&self) -> String {
-        
         self.to_json_value().to_string()
     }
 }
@@ -266,7 +261,7 @@ mod tests {
         assert_eq!(value["message"], "hello");
         let ts = value["timestamp"].as_str().unwrap();
         assert!(!ts.is_empty());
-        
+
         assert!(ts.contains('T'));
         assert!(ts.contains('-'));
         assert!(ts.contains(':'));

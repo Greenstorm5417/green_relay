@@ -1,4 +1,3 @@
-
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -11,7 +10,6 @@
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects
 )]
-
 #![cfg_attr(test, allow(clippy::indexing_slicing, clippy::arithmetic_side_effects))]
 
 /// Admin module.
@@ -100,7 +98,7 @@ async fn shutdown_signal() {
             Ok(mut signal) => {
                 signal.recv().await;
             }
-            
+
             Err(_) => std::future::pending::<()>().await,
         }
     };
@@ -131,10 +129,14 @@ async fn shutdown_watchdog(notified: tokio::sync::oneshot::Receiver<()>) {
 /// empty or any step fails.
 pub async fn create_admin(username: &str, password: &str) -> Result<(), RunError> {
     if username.trim().is_empty() {
-        return Err(RunError::AdminSetup("username must not be empty".to_string()));
+        return Err(RunError::AdminSetup(
+            "username must not be empty".to_string(),
+        ));
     }
     if password.is_empty() {
-        return Err(RunError::AdminSetup("password must not be empty".to_string()));
+        return Err(RunError::AdminSetup(
+            "password must not be empty".to_string(),
+        ));
     }
 
     let config = config::load().map_err(RunError::Config)?;
@@ -166,7 +168,6 @@ pub async fn create_admin(username: &str, password: &str) -> Result<(), RunError
 
 /// Runs the main application service loop.
 pub async fn run() -> Result<(), RunError> {
-    
     let config = match config::load() {
         Ok(config) => config,
         Err(error) => {
@@ -184,7 +185,6 @@ pub async fn run() -> Result<(), RunError> {
     let severity =
         logging::Severity::parse(config.log_level.as_str()).unwrap_or(logging::Severity::Info);
     if let Err(error) = logging::init_subscriber(severity) {
-        
         eprintln!("warning: {error}");
     }
 
@@ -226,16 +226,16 @@ pub async fn run() -> Result<(), RunError> {
 
     tokio::select! {
         result = server => {
-            
+
             result.map_err(RunError::Serve)?;
             drop(modem_handle);
-            
+
             let _ = modem_task.await;
             tracing::info!("graceful shutdown complete");
             Ok(())
         }
         _ = shutdown_watchdog(notify_rx) => {
-            
+
             tracing::error!(
                 grace_secs = SHUTDOWN_GRACE.as_secs(),
                 "graceful shutdown exceeded the grace period; forcing exit"

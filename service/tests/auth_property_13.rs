@@ -10,8 +10,8 @@
 //! against an independent oracle expressed directly from that rule, so it is
 //! the boundary of the *character* count (not byte length) that matters.
 
-use proptest::prelude::*;
 use green_relay::auth::{MAX_KEY_LEN, passes_guard};
+use proptest::prelude::*;
 
 /// Independent oracle for the guard, written separately from the
 /// implementation: a key is rejected (no lookup) if and only if its character

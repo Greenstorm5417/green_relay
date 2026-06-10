@@ -4,8 +4,8 @@
 //! `src/db.rs`) per the spec's test-placement note, and exercises the public
 //! pure `storage_capacity_warn` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::db::storage_capacity_warn;
+use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]

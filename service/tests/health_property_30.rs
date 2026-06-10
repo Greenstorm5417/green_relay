@@ -4,10 +4,10 @@
 //! `src/health.rs`) per the spec's test-placement note, and exercises the
 //! public `deliverability_gate` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::health::{
     DeliverabilityOutcome, ModemStatusSnapshot, SimStatus, deliverability_gate,
 };
+use proptest::prelude::*;
 
 /// Generate an arbitrary SIM status across all variants so that the `Ready`
 /// and not-ready (`NotReady`/`Unknown`) paths are both exercised.

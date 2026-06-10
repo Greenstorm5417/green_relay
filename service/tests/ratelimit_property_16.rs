@@ -7,8 +7,8 @@
 
 use std::time::{Duration, Instant};
 
-use proptest::prelude::*;
 use green_relay::ratelimit::{RateDecision, WindowState, decide};
+use proptest::prelude::*;
 
 /// Generate a window length in whole seconds within a realistic range. The
 /// window is always at least 1 second so the upper bound on `Retry-After`

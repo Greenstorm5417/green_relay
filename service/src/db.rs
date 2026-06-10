@@ -36,7 +36,6 @@ pub struct Db {
 }
 
 impl Db {
-    
     /// Connects to the SQLite database at the specified path.
     pub async fn connect(database_path: &str) -> Result<Db, DbError> {
         let options = SqliteConnectOptions::new()
@@ -586,8 +585,14 @@ mod tests {
 
         let m1 = db.create_inbound_message("1", "first", t1).await.unwrap();
         let m2 = db.create_inbound_message("2", "second", t2).await.unwrap();
-        let m3 = db.create_inbound_message("3", "third_tie_a", t3).await.unwrap();
-        let m4 = db.create_inbound_message("4", "third_tie_b", t3).await.unwrap();
+        let m3 = db
+            .create_inbound_message("3", "third_tie_a", t3)
+            .await
+            .unwrap();
+        let m4 = db
+            .create_inbound_message("4", "third_tie_b", t3)
+            .await
+            .unwrap();
 
         let listed = db.list_inbound_messages().await.unwrap();
         assert_eq!(listed.len(), 4);
@@ -602,14 +607,14 @@ mod tests {
         assert!(!storage_capacity_warn(0, 0));
         assert!(!storage_capacity_warn(10, 0));
         assert!(!storage_capacity_warn(0, 10));
-        
+
         assert!(!storage_capacity_warn(89, 100));
         assert!(storage_capacity_warn(90, 100));
         assert!(storage_capacity_warn(95, 100));
-        
+
         assert!(!storage_capacity_warn(8, 10));
         assert!(storage_capacity_warn(9, 10));
-        
+
         assert!(storage_capacity_warn(18, 20));
         assert!(!storage_capacity_warn(17, 20));
     }
@@ -646,7 +651,13 @@ mod tests {
                 .unwrap();
         // Same row, new password.
         assert_eq!(id, id_after);
-        assert!(crate::admin::verify_password("second-secret", &stored_after));
-        assert!(!crate::admin::verify_password("first-secret", &stored_after));
+        assert!(crate::admin::verify_password(
+            "second-secret",
+            &stored_after
+        ));
+        assert!(!crate::admin::verify_password(
+            "first-secret",
+            &stored_after
+        ));
     }
 }

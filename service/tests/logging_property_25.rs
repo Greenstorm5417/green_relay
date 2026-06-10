@@ -11,8 +11,8 @@
 //! This lives in its own integration-test file (separate from `src/logging.rs`)
 //! and exercises the public API only.
 
-use proptest::prelude::*;
 use green_relay::logging::{at_exchange_log, request_log};
+use proptest::prelude::*;
 
 /// Generate a non-empty, arbitrary HTTP-method-like token. Real methods are
 /// short uppercase words, but the builder must faithfully carry whatever it is

@@ -4,10 +4,10 @@
 //! `src/ratelimit.rs`) per the spec's test-placement note, and exercises the
 //! public `effective_limit` function of the `green_relay` library.
 
-use proptest::prelude::*;
 use green_relay::ratelimit::{
     CUSTOM_LIMIT_MAX, CUSTOM_LIMIT_MIN, RateLimitConfigError, effective_limit,
 };
+use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
