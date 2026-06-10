@@ -291,11 +291,11 @@ fn invalid_config_value_exits_nonzero_and_names_key() {
 
 #[cfg(unix)]
 fn send_sigterm(child: &Child) {
-    let pid = child.id() as libc::pid_t;
-    // Safety: `kill` with a valid pid and signal number has no memory effects.
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
-    }
+    // Invoke the `kill` utility rather than calling libc directly: the package
+    // forbids `unsafe` across every target, including integration tests.
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status();
 }
 
 #[cfg(unix)]

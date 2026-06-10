@@ -107,11 +107,6 @@ harness = false
 name = "fullflow"
 harness = false
 
-# `libc` is only needed by the Unix-gated lifecycle integration tests to send
-# `SIGTERM` to the spawned service binary.
-[target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
-
 # `unsafe` is forbidden across the whole package; the panic-source lints
 # (unwrap/expect/panic/...) are denied at the crate level in `src/lib.rs` and
 # `src/main.rs` so they apply only to the shipped library + binary, not to the
