@@ -575,8 +575,11 @@ impl IntoResponse for SendDecision {
         (status = 202, description = "Accepted and queued for delivery", body = SendResponse),
         (status = 400, description = "Invalid or incomplete request", body = ApiError),
         (status = 401, description = "Missing or invalid API key", body = ApiError),
-        (status = 429, description = "Rate limit exceeded", body = ApiError),
-        (status = 503, description = "Modem cannot deliver right now", body = ApiError)
+        (status = 429, description = "Rate limit exceeded", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds until requests are permitted again"))),
+        (status = 500, description = "Internal server error", body = ApiError),
+        (status = 503, description = "Delivery preconditions unmet or service not ready", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds to wait before retrying")))
     )
 )]
 async fn send_handler(
@@ -607,12 +610,16 @@ async fn send_handler(
     request_body = SendRequest,
     security(("api_key" = [])),
     responses(
-        (status = 200, description = "Delivery resolved within the wait window", body = SyncSendResponse),
+        (status = 200, description = "Delivery resolved within the wait window", body = SyncSendResponse,
+            example = json!({ "id": 142, "status": "sent", "reference": "25", "parts": 1 })),
         (status = 202, description = "Still queued; delivery continues in the background", body = SendResponse),
         (status = 400, description = "Invalid or incomplete request", body = ApiError),
         (status = 401, description = "Missing or invalid API key", body = ApiError),
-        (status = 429, description = "Rate limit exceeded", body = ApiError),
-        (status = 503, description = "Modem cannot deliver right now", body = ApiError)
+        (status = 429, description = "Rate limit exceeded", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds until requests are permitted again"))),
+        (status = 500, description = "Internal server error", body = ApiError),
+        (status = 503, description = "Delivery preconditions unmet or service not ready", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds to wait before retrying")))
     )
 )]
 async fn send_sync_handler(
@@ -837,7 +844,10 @@ async fn dispatch_send(
     security(("api_key" = [])),
     responses(
         (status = 200, description = "An open text/event-stream of message_status and inbound_sms events", content_type = "text/event-stream"),
-        (status = 401, description = "Missing or invalid API key", body = ApiError)
+        (status = 401, description = "Missing or invalid API key", body = ApiError),
+        (status = 429, description = "Rate limit exceeded", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds until requests are permitted again"))),
+        (status = 500, description = "Internal server error", body = ApiError)
     )
 )]
 async fn events_handler(
@@ -871,7 +881,11 @@ fn sse_event(event: &ServiceEvent) -> Result<Event, axum::Error> {
     responses(
         (status = 200, description = "Inbound messages ordered by receipt time descending", body = Vec<InboundMessage>),
         (status = 401, description = "Missing or invalid API key", body = ApiError),
-        (status = 503, description = "Service not ready", body = ApiError)
+        (status = 429, description = "Rate limit exceeded", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds until requests are permitted again"))),
+        (status = 500, description = "Internal server error", body = ApiError),
+        (status = 503, description = "Service not ready", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds to wait before retrying")))
     )
 )]
 async fn inbound_handler(State(state): State<ApiState>) -> Response {
@@ -890,9 +904,13 @@ async fn inbound_handler(State(state): State<ApiState>) -> Response {
     params(("id" = i64, Path, description = "Outbound message ID")),
     responses(
         (status = 200, description = "The outbound message record", body = OutboundMessage),
-        (status = 404, description = "No message with that ID", body = ApiError),
         (status = 401, description = "Missing or invalid API key", body = ApiError),
-        (status = 503, description = "Service not ready", body = ApiError)
+        (status = 404, description = "No message with that ID", body = ApiError),
+        (status = 429, description = "Rate limit exceeded", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds until requests are permitted again"))),
+        (status = 500, description = "Internal server error", body = ApiError),
+        (status = 503, description = "Service not ready", body = ApiError,
+            headers(("Retry-After" = String, description = "Seconds to wait before retrying")))
     )
 )]
 async fn outbound_status_handler(State(state): State<ApiState>, Path(id): Path<i64>) -> Response {
