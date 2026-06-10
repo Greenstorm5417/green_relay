@@ -6,6 +6,9 @@ REST API, a real-time Server-Sent Events stream, a synchronous send endpoint,
 and an Argon2-secured admin dashboard, persisting state in SQLite. It is
 designed to run as a `systemd` service on a Raspberry Pi.
 
+Repository: <https://github.com/Greenstorm5417/green_relay>
+API docs (Swagger UI): <https://greenstorm5417.github.io/green_relay/>
+
 ## Layout
 
 - `service/` — the Rust service (binary + library, package `green_relay`).
@@ -16,6 +19,8 @@ designed to run as a `systemd` service on a Raspberry Pi.
 ## Building
 
 ```sh
+git clone https://github.com/Greenstorm5417/green_relay.git
+cd green_relay
 # Debug build
 scripts/build.sh
 # Release build

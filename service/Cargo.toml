@@ -2,16 +2,17 @@
 name = "green_relay"
 version = "0.1.0"
 edition = "2024"
+authors = ["Greenstorm5417 <Greenstorm5417@users.noreply.github.com>"]
 description = "SMS microservice for a Waveshare SIM7600X modem: authenticated REST API, real-time SSE event stream, and an admin dashboard."
 license = "MIT"
-repository = "https://github.com/OWNER/sms_micro_service"
+repository = "https://github.com/Greenstorm5417/green_relay"
 readme = "../README.md"
 
 # Debian package metadata, consumed by `cargo deb`. Produces a `.deb` that
 # installs the binary, an example config, and a systemd unit.
 [package.metadata.deb]
-maintainer = "Green Relay Maintainers <maintainers@example.com>"
-copyright = "2025 Green Relay Maintainers"
+maintainer = "Greenstorm5417 <Greenstorm5417@users.noreply.github.com>"
+copyright = "2025 Greenstorm5417"
 section = "comm"
 priority = "optional"
 extended-description = """\

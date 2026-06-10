@@ -1,6 +1,6 @@
 [Unit]
 Description=Green Relay SMS microservice
-Documentation=https://github.com/OWNER/sms_micro_service
+Documentation=https://github.com/Greenstorm5417/green_relay
 After=network-online.target
 Wants=network-online.target
 
