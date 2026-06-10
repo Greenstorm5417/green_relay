@@ -8,7 +8,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "swagger-ui-dist": "^5.32.6"
+    "@redocly/cli": "^1.25.13"
   },
   "scripts": {
     "build": "bun run build.ts"
