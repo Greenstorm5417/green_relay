@@ -71,5 +71,5 @@ the modem's serial device.
 
 ## Continuous integration
 
-Pushes to `master` run `cargo fmt` (auto-committed back), `cargo clippy`, and
+Pushes to `main` run `cargo fmt` (auto-committed back), `cargo clippy`, and
 the full test suite. See `.github/workflows/`.
