@@ -1,14 +1,17 @@
 {
   "name": "green-relay-docs",
-  "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "description": "Builds a self-contained Swagger UI site from the generated OpenAPI spec.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "swagger-ui-dist": "^5.32.6"
+  },
   "scripts": {
     "build": "bun run build.ts"
   },
-  "dependencies": {
-    "swagger-ui-dist": "^5.18.2"
-  },
-  "packageManager": "bun@1.3.14"
+  "description": "Builds a self-contained Swagger UI site from the generated OpenAPI spec."
 }
