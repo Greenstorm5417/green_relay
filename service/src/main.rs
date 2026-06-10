@@ -1,4 +1,3 @@
-
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -29,6 +28,7 @@ fn main() -> ExitCode {
     if let Some(command) = args.get(1) {
         return match command.as_str() {
             "create-admin" => create_admin_command(&runtime, &args),
+            "openapi" => print_openapi(),
             "help" | "-h" | "--help" => {
                 print_usage();
                 ExitCode::SUCCESS
@@ -61,6 +61,21 @@ fn print_usage() {
     eprintln!("  green_relay                          run the service");
     eprintln!("  green_relay create-admin <user> <password>");
     eprintln!("                                             create or reset an admin user");
+    eprintln!("  green_relay openapi                  print the OpenAPI spec as JSON");
+}
+
+/// Handle `openapi`: print the generated OpenAPI document to stdout.
+fn print_openapi() -> ExitCode {
+    match green_relay::api::openapi_json() {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to serialize the OpenAPI document: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Handle `create-admin <username> <password>`: bootstrap or reset an admin.

@@ -1,4 +1,3 @@
-
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
@@ -269,6 +268,14 @@ pub struct ApiDoc;
 /// Path at which the generated OpenAPI document is served as JSON.
 pub const OPENAPI_JSON_PATH: &str = "/api-docs/openapi.json";
 
+/// Returns the generated OpenAPI document serialized as pretty-printed JSON.
+///
+/// Used by the `openapi` CLI subcommand and the docs pipeline to emit the spec
+/// without starting the HTTP server.
+pub fn openapi_json() -> Result<String, serde_json::Error> {
+    ApiDoc::openapi().to_pretty_json()
+}
+
 /// Creates the router containing all API routes plus the OpenAPI document.
 ///
 /// Public REST routes are collected through [`OpenApiRouter`] so the routing
@@ -283,7 +290,10 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(events_handler))
         .route_layer(
             ServiceBuilder::new()
-                .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth_middleware,
+                ))
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
                     rate_limit_middleware,
@@ -822,8 +832,12 @@ async fn events_handler(
 
 fn sse_event(event: &ServiceEvent) -> Result<Event, axum::Error> {
     match event {
-        ServiceEvent::MessageStatus(payload) => Event::default().event(event.name()).json_data(payload),
-        ServiceEvent::InboundSms(payload) => Event::default().event(event.name()).json_data(payload),
+        ServiceEvent::MessageStatus(payload) => {
+            Event::default().event(event.name()).json_data(payload)
+        }
+        ServiceEvent::InboundSms(payload) => {
+            Event::default().event(event.name()).json_data(payload)
+        }
     }
 }
 
@@ -860,10 +874,7 @@ async fn inbound_handler(State(state): State<ApiState>) -> Response {
         (status = 503, description = "Service not ready", body = ApiError)
     )
 )]
-async fn outbound_status_handler(
-    State(state): State<ApiState>,
-    Path(id): Path<i64>,
-) -> Response {
+async fn outbound_status_handler(State(state): State<ApiState>, Path(id): Path<i64>) -> Response {
     match state.db.get_outbound_message(id).await {
         Ok(Some(message)) => (StatusCode::OK, Json(message)).into_response(),
         Ok(None) => (
@@ -1052,7 +1063,6 @@ mod tests {
     }
 
     fn queued_result() -> SendResult {
-        
         SendResult {
             status: MessageStatus::Queued,
             reference: None,
@@ -1218,8 +1228,16 @@ mod tests {
 
         let events = EventBus::default();
         let modem: SharedModem = Arc::new(modem);
-        dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
-            .await;
+        dispatch_send(
+            &db,
+            &modem,
+            &events,
+            created.id,
+            "+14155552671".into(),
+            "hi".into(),
+            None,
+        )
+        .await;
 
         let stored = db.get_outbound_message(created.id).await.unwrap().unwrap();
         assert_eq!(stored.status, MessageStatus::Sent);
@@ -1245,8 +1263,16 @@ mod tests {
 
         let events = EventBus::default();
         let modem: SharedModem = Arc::new(modem);
-        dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
-            .await;
+        dispatch_send(
+            &db,
+            &modem,
+            &events,
+            created.id,
+            "+14155552671".into(),
+            "hi".into(),
+            None,
+        )
+        .await;
 
         let stored = db.get_outbound_message(created.id).await.unwrap().unwrap();
         assert_eq!(stored.status, MessageStatus::Failed);
@@ -1267,8 +1293,16 @@ mod tests {
 
         let events = EventBus::default();
         let modem: SharedModem = Arc::new(modem);
-        dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
-            .await;
+        dispatch_send(
+            &db,
+            &modem,
+            &events,
+            created.id,
+            "+14155552671".into(),
+            "hi".into(),
+            None,
+        )
+        .await;
 
         let stored = db.get_outbound_message(created.id).await.unwrap().unwrap();
         assert_eq!(stored.status, MessageStatus::Queued);
@@ -1434,7 +1468,7 @@ mod tests {
     async fn rate_limit_rejects_over_limit_with_retry_after() {
         let db = ready_db().await;
         insert_key(&db, "limited-key", None).await;
-        
+
         let state = test_state(db).with_rate_config(1, Duration::from_secs(60));
         let app = router(state);
 
