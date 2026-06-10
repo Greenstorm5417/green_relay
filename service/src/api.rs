@@ -268,12 +268,43 @@ pub struct ApiDoc;
 /// Path at which the generated OpenAPI document is served as JSON.
 pub const OPENAPI_JSON_PATH: &str = "/api-docs/openapi.json";
 
+/// Returns the complete generated OpenAPI document, including every public
+/// path collected from the route handlers.
+///
+/// This is the single source of truth shared by the served
+/// `/api-docs/openapi.json` endpoint and the `openapi` CLI subcommand, so the
+/// deployed docs always match the running service.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    let (_router, api): (Router<ApiState>, _) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .merge(protected_routes())
+        .merge(public_routes())
+        .split_for_parts();
+    api
+}
+
 /// Returns the generated OpenAPI document serialized as pretty-printed JSON.
 ///
 /// Used by the `openapi` CLI subcommand and the docs pipeline to emit the spec
 /// without starting the HTTP server.
 pub fn openapi_json() -> Result<String, serde_json::Error> {
-    ApiDoc::openapi().to_pretty_json()
+    openapi().to_pretty_json()
+}
+
+/// Authenticated, rate-limited routes (everything except `/health`/`/status`).
+fn protected_routes() -> OpenApiRouter<ApiState> {
+    OpenApiRouter::new()
+        .routes(routes!(send_handler))
+        .routes(routes!(send_sync_handler))
+        .routes(routes!(inbound_handler))
+        .routes(routes!(outbound_status_handler))
+        .routes(routes!(events_handler))
+}
+
+/// Unauthenticated operational routes.
+fn public_routes() -> OpenApiRouter<ApiState> {
+    OpenApiRouter::new()
+        .routes(routes!(health_handler))
+        .routes(routes!(status_handler))
 }
 
 /// Creates the router containing all API routes plus the OpenAPI document.
@@ -282,31 +313,21 @@ pub fn openapi_json() -> Result<String, serde_json::Error> {
 /// table and the generated spec stay in sync; the admin dashboard router is
 /// merged separately and is deliberately absent from the OpenAPI document.
 pub fn router(state: ApiState) -> Router {
-    let protected = OpenApiRouter::new()
-        .routes(routes!(send_handler))
-        .routes(routes!(send_sync_handler))
-        .routes(routes!(inbound_handler))
-        .routes(routes!(outbound_status_handler))
-        .routes(routes!(events_handler))
-        .route_layer(
-            ServiceBuilder::new()
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    auth_middleware,
-                ))
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    rate_limit_middleware,
-                )),
-        );
-
-    let public = OpenApiRouter::new()
-        .routes(routes!(health_handler))
-        .routes(routes!(status_handler));
+    let protected = protected_routes().route_layer(
+        ServiceBuilder::new()
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                rate_limit_middleware,
+            )),
+    );
 
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(protected)
-        .merge(public)
+        .merge(public_routes())
         .split_for_parts();
 
     router
@@ -1349,6 +1370,27 @@ mod tests {
                 "operator".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn openapi_document_includes_every_public_path() {
+        let json = openapi_json().expect("serialize openapi");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let paths = value
+            .get("paths")
+            .and_then(|p| p.as_object())
+            .expect("paths object present");
+        for path in [
+            "/api/v1/messages",
+            "/api/v1/messages/sync",
+            "/api/v1/messages/inbound",
+            "/api/v1/messages/{id}",
+            "/api/v1/events",
+            "/health",
+            "/status",
+        ] {
+            assert!(paths.contains_key(path), "spec is missing path {path}");
+        }
     }
 
     use axum::body::Body;
