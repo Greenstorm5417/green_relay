@@ -7,7 +7,7 @@ use crate::models::MessageStatus;
 pub const EVENT_BUS_CAPACITY: usize = 256;
 
 /// Payload published when an outbound message changes delivery status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct MessageStatusEvent {
     /// The unique outbound message ID.
     pub id: i64,
@@ -18,7 +18,7 @@ pub struct MessageStatusEvent {
 }
 
 /// Payload published when a new inbound message is persisted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct InboundSmsEvent {
     /// The unique inbound message ID.
     pub id: i64,

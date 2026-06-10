@@ -1,6 +1,7 @@
 
 use std::convert::Infallible;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,13 +14,18 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::get,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 use tower::ServiceBuilder;
+use utoipa::{
+    Modify, OpenApi,
+    openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
+};
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::auth::{
     ApiKeyId, AuthOutcome, FailureTracker, KeyStore, authenticate_identified,
@@ -31,7 +37,7 @@ use crate::health::{
     DEFAULT_RETRY_AFTER_SECS, DeliverabilityOutcome, ModemStatusSnapshot, ServiceHealth, SimStatus,
     deliverability_gate, derive_health,
 };
-use crate::models::MessageStatus;
+use crate::models::{InboundMessage, MessageStatus, OutboundMessage};
 use crate::modem::{ModemHandle, SendResult};
 use crate::ratelimit::{RateDecision, RateLimiter, effective_limit};
 use crate::sms::{
@@ -50,7 +56,7 @@ pub const DEFAULT_RATE_WINDOW_SECS: u64 = 60;
 const SYNC_SEND_WAIT_SECS: u64 = 30;
 
 /// Port interface for modem interactions.
-pub trait ModemPort: Clone + Send + Sync + 'static {
+pub trait ModemPort: Send + Sync + 'static {
     /// Retrieves a status snapshot of the modem.
     fn status_snapshot(&self) -> ModemStatusSnapshot;
     /// Sends an SMS message.
@@ -67,13 +73,42 @@ impl ModemPort for ModemHandle {
     }
 }
 
+/// Object-safe bridge over [`ModemPort`] so the API layer can hold a single
+/// concrete state type behind dynamic dispatch regardless of which modem
+/// implementation is wired in.
+trait DynModemPort: Send + Sync + 'static {
+    fn status_snapshot(&self) -> ModemStatusSnapshot;
+    fn send<'a>(
+        &'a self,
+        to: String,
+        body: String,
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>>;
+}
+
+impl<M: ModemPort> DynModemPort for M {
+    fn status_snapshot(&self) -> ModemStatusSnapshot {
+        ModemPort::status_snapshot(self)
+    }
+
+    fn send<'a>(
+        &'a self,
+        to: String,
+        body: String,
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+        Box::pin(ModemPort::send(self, to, body))
+    }
+}
+
+/// A shared, type-erased handle to the modem port.
+type SharedModem = Arc<dyn DynModemPort>;
+
 /// API shared state configuration.
 #[derive(Clone)]
-pub struct ApiState<M: ModemPort> {
+pub struct ApiState {
     /// Database pool handle.
     pub db: Db,
-    /// Modem port instance.
-    pub modem: M,
+    /// Type-erased modem port instance.
+    modem: SharedModem,
     /// Retry after header default value.
     pub retry_after_secs: u64,
     /// Authentication failure tracker.
@@ -88,12 +123,12 @@ pub struct ApiState<M: ModemPort> {
     pub events: EventBus,
 }
 
-impl<M: ModemPort> ApiState<M> {
-    /// Creates a new ApiState.
-    pub fn new(db: Db, modem: M) -> Self {
+impl ApiState {
+    /// Creates a new ApiState from any [`ModemPort`] implementation.
+    pub fn new<M: ModemPort>(db: Db, modem: M) -> Self {
         ApiState {
             db,
-            modem,
+            modem: Arc::new(modem),
             retry_after_secs: DEFAULT_RETRY_AFTER_SECS,
             auth_failures: Arc::new(Mutex::new(FailureTracker::new())),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
@@ -104,7 +139,7 @@ impl<M: ModemPort> ApiState<M> {
     }
 
     /// Creates a new ApiState with custom retry after value.
-    pub fn with_retry_after(db: Db, modem: M, retry_after_secs: u64) -> Self {
+    pub fn with_retry_after<M: ModemPort>(db: Db, modem: M, retry_after_secs: u64) -> Self {
         ApiState {
             retry_after_secs,
             ..ApiState::new(db, modem)
@@ -126,16 +161,18 @@ impl<M: ModemPort> ApiState<M> {
 }
 
 /// Payload for sending an SMS.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct SendRequest {
     /// Recipient E.164 phone number.
+    #[schema(example = "+14155552671")]
     pub to: Option<String>,
     /// Message body.
+    #[schema(example = "Hello from the SMS microservice")]
     pub body: Option<String>,
 }
 
 /// Response returned on successful SMS submission.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct SendResponse {
     /// The unique message ID.
     pub id: i64,
@@ -146,7 +183,7 @@ pub struct SendResponse {
 }
 
 /// Response returned by the synchronous send endpoint once delivery resolves.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct SyncSendResponse {
     /// The unique message ID.
     pub id: i64,
@@ -161,7 +198,7 @@ pub struct SyncSendResponse {
 pub use crate::error::ApiError;
 
 /// Response representing the service health status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
     /// Overall health value.
     pub health: &'static str,
@@ -172,7 +209,7 @@ pub struct HealthResponse {
 }
 
 /// Response representing the detailed modem status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct StatusResponse {
     /// Signal strength percentage.
     pub signal_percent: Option<u8>,
@@ -184,33 +221,93 @@ pub struct StatusResponse {
     pub unavailable: Vec<String>,
 }
 
-/// Creates the router containing all API routes.
-pub fn router<M: ModemPort>(state: ApiState<M>) -> Router {
-    let protected = Router::new()
-        .route("/api/v1/messages", post(send_handler::<M>))
-        .route("/api/v1/messages/sync", post(send_sync_handler::<M>))
-        .route("/api/v1/messages/inbound", get(inbound_handler::<M>))
-        .route("/api/v1/messages/{id}", get(outbound_status_handler::<M>))
-        .route("/api/v1/events", get(events_handler::<M>))
+/// Registers the API-key security scheme on the generated OpenAPI document.
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "api_key",
+                SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("x-api-key"))),
+            );
+        }
+    }
+}
+
+/// OpenAPI document for the public REST API.
+///
+/// Admin dashboard routes are intentionally excluded from the generated spec.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "SMS Microservice API",
+        description = "Send and receive SMS through a Waveshare SIM7600X modem, with a real-time event stream."
+    ),
+    modifiers(&SecurityAddon),
+    components(schemas(
+        SendRequest,
+        SendResponse,
+        SyncSendResponse,
+        HealthResponse,
+        StatusResponse,
+        ApiError,
+        MessageStatus,
+        InboundMessage,
+        OutboundMessage,
+        crate::events::MessageStatusEvent,
+        crate::events::InboundSmsEvent
+    )),
+    tags(
+        (name = "messages", description = "Send and retrieve SMS messages"),
+        (name = "events", description = "Real-time Server-Sent Events stream"),
+        (name = "health", description = "Service health and modem status")
+    )
+)]
+pub struct ApiDoc;
+
+/// Path at which the generated OpenAPI document is served as JSON.
+pub const OPENAPI_JSON_PATH: &str = "/api-docs/openapi.json";
+
+/// Creates the router containing all API routes plus the OpenAPI document.
+///
+/// Public REST routes are collected through [`OpenApiRouter`] so the routing
+/// table and the generated spec stay in sync; the admin dashboard router is
+/// merged separately and is deliberately absent from the OpenAPI document.
+pub fn router(state: ApiState) -> Router {
+    let protected = OpenApiRouter::new()
+        .routes(routes!(send_handler))
+        .routes(routes!(send_sync_handler))
+        .routes(routes!(inbound_handler))
+        .routes(routes!(outbound_status_handler))
+        .routes(routes!(events_handler))
         .route_layer(
             ServiceBuilder::new()
+                .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
-                    auth_middleware::<M>,
-                ))
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    rate_limit_middleware::<M>,
+                    rate_limit_middleware,
                 )),
+        );
+
+    let public = OpenApiRouter::new()
+        .routes(routes!(health_handler))
+        .routes(routes!(status_handler));
+
+    let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .merge(protected)
+        .merge(public)
+        .split_for_parts();
+
+    router
+        .route(
+            OPENAPI_JSON_PATH,
+            get(move || {
+                let api = api.clone();
+                async move { Json(api) }
+            }),
         )
-        .with_state(state.clone());
-
-    let public = Router::new()
-        .route("/health", get(health_handler::<M>))
-        .route("/status", get(status_handler::<M>))
-        .with_state(state);
-
-    protected.merge(public)
+        .with_state(state)
 }
 
 #[derive(Debug, Clone)]
@@ -280,8 +377,8 @@ fn unauthorized_response() -> Response {
         .into_response()
 }
 
-async fn auth_middleware<M: ModemPort>(
-    State(state): State<ApiState<M>>,
+async fn auth_middleware(
+    State(state): State<ApiState>,
     mut request: Request,
     next: Next,
 ) -> Response {
@@ -358,8 +455,8 @@ fn emit_auth_audit(identifier: &str, outcome: &AuthOutcome, timestamp: chrono::D
     );
 }
 
-async fn rate_limit_middleware<M: ModemPort>(
-    State(state): State<ApiState<M>>,
+async fn rate_limit_middleware(
+    State(state): State<ApiState>,
     Extension(ctx): Extension<AuthContext>,
     request: Request,
     next: Next,
@@ -433,8 +530,26 @@ impl IntoResponse for SendDecision {
     }
 }
 
-async fn send_handler<M: ModemPort>(
-    State(state): State<ApiState<M>>,
+/// Send an SMS message asynchronously.
+///
+/// Validates and persists the message as `queued`, then dispatches delivery in
+/// the background and returns immediately.
+#[utoipa::path(
+    post,
+    path = "/api/v1/messages",
+    tag = "messages",
+    request_body = SendRequest,
+    security(("api_key" = [])),
+    responses(
+        (status = 202, description = "Accepted and queued for delivery", body = SendResponse),
+        (status = 400, description = "Invalid or incomplete request", body = ApiError),
+        (status = 401, description = "Missing or invalid API key", body = ApiError),
+        (status = 429, description = "Rate limit exceeded", body = ApiError),
+        (status = 503, description = "Modem cannot deliver right now", body = ApiError)
+    )
+)]
+async fn send_handler(
+    State(state): State<ApiState>,
     body: Result<Json<SendRequest>, JsonRejection>,
 ) -> Response {
     let Json(request) = match body {
@@ -450,8 +565,27 @@ async fn send_handler<M: ModemPort>(
     queue_send(&state, &request).await.into_response()
 }
 
-async fn send_sync_handler<M: ModemPort>(
-    State(state): State<ApiState<M>>,
+/// Send an SMS message and block for the delivery outcome.
+///
+/// Applies the same validation, gating, and persistence as the asynchronous
+/// endpoint, but waits for delivery to resolve before responding.
+#[utoipa::path(
+    post,
+    path = "/api/v1/messages/sync",
+    tag = "messages",
+    request_body = SendRequest,
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Delivery resolved within the wait window", body = SyncSendResponse),
+        (status = 202, description = "Still queued; delivery continues in the background", body = SendResponse),
+        (status = 400, description = "Invalid or incomplete request", body = ApiError),
+        (status = 401, description = "Missing or invalid API key", body = ApiError),
+        (status = 429, description = "Rate limit exceeded", body = ApiError),
+        (status = 503, description = "Modem cannot deliver right now", body = ApiError)
+    )
+)]
+async fn send_sync_handler(
+    State(state): State<ApiState>,
     body: Result<Json<SendRequest>, JsonRejection>,
 ) -> Response {
     let Json(request) = match body {
@@ -481,8 +615,8 @@ struct DispatchOutcome {
     reference: Option<String>,
 }
 
-async fn prepare_send<M: ModemPort>(
-    state: &ApiState<M>,
+async fn prepare_send(
+    state: &ApiState,
     request: &SendRequest,
 ) -> Result<PreparedSend, SendDecision> {
     let (Some(to), Some(body)) = (request.to.as_deref(), request.body.as_deref()) else {
@@ -535,7 +669,7 @@ async fn prepare_send<M: ModemPort>(
     })
 }
 
-async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> SendDecision {
+async fn queue_send(state: &ApiState, request: &SendRequest) -> SendDecision {
     let PreparedSend {
         id,
         to,
@@ -560,7 +694,7 @@ async fn queue_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) ->
     })
 }
 
-async fn sync_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> Response {
+async fn sync_send(state: &ApiState, request: &SendRequest) -> Response {
     let PreparedSend {
         id,
         to,
@@ -606,9 +740,9 @@ async fn sync_send<M: ModemPort>(state: &ApiState<M>, request: &SendRequest) -> 
     }
 }
 
-async fn dispatch_send<M: ModemPort>(
+async fn dispatch_send(
     db: &Db,
-    modem: &M,
+    modem: &SharedModem,
     events: &EventBus,
     id: i64,
     to: String,
@@ -665,8 +799,18 @@ async fn dispatch_send<M: ModemPort>(
 /// Outbound `message_status` transitions and `inbound_sms` arrivals are
 /// emitted as named SSE events with a JSON `data` payload. Clients that fall
 /// behind the broadcast buffer silently skip the dropped events.
-async fn events_handler<M: ModemPort>(
-    State(state): State<ApiState<M>>,
+#[utoipa::path(
+    get,
+    path = "/api/v1/events",
+    tag = "events",
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "An open text/event-stream of message_status and inbound_sms events", content_type = "text/event-stream"),
+        (status = 401, description = "Missing or invalid API key", body = ApiError)
+    )
+)]
+async fn events_handler(
+    State(state): State<ApiState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.events.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|item| {
@@ -683,15 +827,41 @@ fn sse_event(event: &ServiceEvent) -> Result<Event, axum::Error> {
     }
 }
 
-async fn inbound_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
+/// List received inbound SMS messages, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/messages/inbound",
+    tag = "messages",
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Inbound messages ordered by receipt time descending", body = Vec<InboundMessage>),
+        (status = 401, description = "Missing or invalid API key", body = ApiError),
+        (status = 503, description = "Service not ready", body = ApiError)
+    )
+)]
+async fn inbound_handler(State(state): State<ApiState>) -> Response {
     match state.db.list_inbound_messages().await {
         Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
         Err(err) => db_error_response(&err, state.retry_after_secs),
     }
 }
 
-async fn outbound_status_handler<M: ModemPort>(
-    State(state): State<ApiState<M>>,
+/// Fetch the current status of a single outbound message by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/messages/{id}",
+    tag = "messages",
+    security(("api_key" = [])),
+    params(("id" = i64, Path, description = "Outbound message ID")),
+    responses(
+        (status = 200, description = "The outbound message record", body = OutboundMessage),
+        (status = 404, description = "No message with that ID", body = ApiError),
+        (status = 401, description = "Missing or invalid API key", body = ApiError),
+        (status = 503, description = "Service not ready", body = ApiError)
+    )
+)]
+async fn outbound_status_handler(
+    State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> Response {
     match state.db.get_outbound_message(id).await {
@@ -705,13 +875,32 @@ async fn outbound_status_handler<M: ModemPort>(
     }
 }
 
-async fn health_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
+/// Report overall service health and the serial/SIM connection state.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "health",
+    responses(
+        (status = 200, description = "Service is healthy or degraded", body = HealthResponse),
+        (status = 503, description = "Service is unhealthy", body = HealthResponse)
+    )
+)]
+async fn health_handler(State(state): State<ApiState>) -> Response {
     let snapshot = state.modem.status_snapshot();
     let (status, body) = build_health_response(&snapshot);
     (status, Json(body)).into_response()
 }
 
-async fn status_handler<M: ModemPort>(State(state): State<ApiState<M>>) -> Response {
+/// Report detailed modem status: signal, registration, and operator.
+#[utoipa::path(
+    get,
+    path = "/status",
+    tag = "health",
+    responses(
+        (status = 200, description = "Modem status, with unavailable fields listed", body = StatusResponse)
+    )
+)]
+async fn status_handler(State(state): State<ApiState>) -> Response {
     let snapshot = state.modem.status_snapshot();
     (StatusCode::OK, Json(build_status_response(&snapshot))).into_response()
 }
@@ -1028,6 +1217,7 @@ mod tests {
         };
 
         let events = EventBus::default();
+        let modem: SharedModem = Arc::new(modem);
         dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
             .await;
 
@@ -1054,6 +1244,7 @@ mod tests {
         };
 
         let events = EventBus::default();
+        let modem: SharedModem = Arc::new(modem);
         dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
             .await;
 
@@ -1075,6 +1266,7 @@ mod tests {
         };
 
         let events = EventBus::default();
+        let modem: SharedModem = Arc::new(modem);
         dispatch_send(&db, &modem, &events, created.id, "+14155552671".into(), "hi".into(), None)
             .await;
 
@@ -1153,7 +1345,7 @@ mod tests {
             .unwrap();
     }
 
-    fn test_state(db: Db) -> ApiState<StubModem> {
+    fn test_state(db: Db) -> ApiState {
         ApiState::new(
             db,
             StubModem {

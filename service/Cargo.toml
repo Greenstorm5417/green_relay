@@ -52,6 +52,12 @@ serde_json = "1.0.150"
 # stabilizes.
 serde_yaml = "0.9"
 chrono = { version = "0.4.45", features = ["serde"] }
+# OpenAPI generation. `utoipa` derives schema/path metadata from the public
+# route handlers and models; `utoipa-axum` (0.2 targets axum 0.8) provides the
+# `OpenApiRouter` + `routes!` bindings that keep the routing table and the
+# generated spec in sync.
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+utoipa-axum = "0.2"
 
 [dev-dependencies]
 proptest = "1.11.0"

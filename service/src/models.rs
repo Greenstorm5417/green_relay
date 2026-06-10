@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Represents the delivery or sending status of a message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageStatus {
     
@@ -37,7 +37,7 @@ impl MessageStatus {
 }
 
 /// Represents an outgoing SMS message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OutboundMessage {
     
     /// The unique identifier of the message.
@@ -69,7 +69,7 @@ pub struct OutboundMessage {
 }
 
 /// Represents an incoming SMS message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct InboundMessage {
     
     /// The unique identifier of the message.

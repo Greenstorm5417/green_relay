@@ -3,7 +3,7 @@ use std::io;
 use serde::{Serialize, Deserialize};
 
 /// Error representing standard API error responses.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ApiError {
     /// The error message.
     pub error: String,

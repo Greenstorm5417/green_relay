@@ -145,7 +145,7 @@ async fn insert_key(db: &Db, plaintext: &str) {
     .expect("insert api key");
 }
 
-fn state_with(db: Db, snapshot: ModemStatusSnapshot, result: SendResult) -> ApiState<StubModem> {
+fn state_with(db: Db, snapshot: ModemStatusSnapshot, result: SendResult) -> ApiState {
     ApiState::new(db, StubModem { snapshot, result })
 }
 
@@ -368,4 +368,64 @@ async fn events_endpoint_streams_published_events() {
     assert!(payload.contains("event:inbound_sms") || payload.contains("event: inbound_sms"));
     assert!(payload.contains("\"from\":\"+14155550123\""));
     assert!(payload.contains("\"body\":\"Hey there!\""));
+}
+
+// ---------------------------------------------------------------------------
+// Generated OpenAPI document
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn openapi_json_documents_public_routes_only() {
+    let temp = ready_db().await;
+    let app = router(state_with(
+        temp.db.clone(),
+        healthy_snapshot(),
+        sent_result(1),
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(green_relay::api::OPENAPI_JSON_PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The spec is served unauthenticated as JSON.
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+
+    let paths = body
+        .get("paths")
+        .and_then(|p| p.as_object())
+        .expect("openapi document has a paths object");
+
+    // Every public route is documented.
+    for expected in [
+        "/api/v1/messages",
+        "/api/v1/messages/sync",
+        "/api/v1/messages/inbound",
+        "/api/v1/messages/{id}",
+        "/api/v1/events",
+        "/health",
+        "/status",
+    ] {
+        assert!(paths.contains_key(expected), "missing path {expected}");
+    }
+
+    // Admin routes are intentionally excluded from the public spec.
+    assert!(
+        paths.keys().all(|p| !p.starts_with("/admin")),
+        "admin routes must not appear in the public OpenAPI document"
+    );
+
+    // The API-key security scheme is registered.
+    let schemes = body
+        .pointer("/components/securitySchemes")
+        .and_then(|s| s.as_object())
+        .expect("security schemes are present");
+    assert!(schemes.contains_key("api_key"));
 }
