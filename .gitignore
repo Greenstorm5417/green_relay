@@ -4,6 +4,12 @@
 # Assembled distribution output (compiled binary + exported web UI assets).
 /dist/
 
+# Generated API docs site (Bun build output, deps, and emitted spec).
+/docs/dist/
+/docs/node_modules/
+/docs/openapi.json
+/docs/bun.lock
+
 .kiro/
 
 

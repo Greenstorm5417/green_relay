@@ -106,14 +106,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: service
-      - name: Assemble docs site
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Generate OpenAPI spec
         run: |
-          mkdir -p site
-          cp docs/index.html site/index.html
-          (cd service && cargo run --quiet --bin green_relay -- openapi) > site/openapi.json
+          mkdir -p docs
+          (cd service && cargo run --quiet --bin green_relay -- openapi) > docs/openapi.json
+      - name: Build self-contained Swagger UI site
+        working-directory: docs
+        run: |
+          bun install
+          bun run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: docs/dist
       - id: deploy
         uses: actions/deploy-pages@v4

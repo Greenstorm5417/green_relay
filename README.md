@@ -14,7 +14,7 @@ API docs (Swagger UI): <https://greenstorm5417.github.io/green_relay/>
 - `service/` — the Rust service (binary + library, package `green_relay`).
 - `web-ui/` — optional Next.js admin UI (bundled via the `web-ui` cargo feature).
 - `scripts/` — build/packaging helpers.
-- `docs/` — Swagger UI page published to GitHub Pages.
+- `docs/` — Bun project that builds a self-contained Swagger UI site (published to GitHub Pages).
 
 ## Building
 
