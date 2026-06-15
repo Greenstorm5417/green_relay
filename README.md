@@ -78,6 +78,45 @@ cd service && cargo run --bin green_relay -- openapi > openapi.json
 On each tagged release the CI pipeline regenerates the spec and publishes a
 Swagger UI to GitHub Pages.
 
+## Observability
+
+The daemon is built to be monitored remotely through three surfaces:
+
+- **Structured logs.** Every event is emitted as a single JSON line to stdout
+  (captured by `journald` under systemd). Set `LOG_DIR` to also write rotating
+  log files; `LOG_ROTATION` (`MINUTELY`/`HOURLY`/`DAILY`/`NEVER`) and
+  `LOG_MAX_FILES` control rollover and retention. `LOG_LEVEL` sets the minimum
+  severity. File writes go through a non-blocking writer, off the request path.
+- **Health and status.** `GET /health` returns `200` (healthy/degraded) or
+  `503` (unhealthy) with a JSON body; `GET /status` reports signal, registration,
+  and operator. Both are unauthenticated.
+- **Prometheus metrics.** `GET /metrics` exposes counters and gauges in
+  Prometheus text exposition format (`text/plain; version=0.0.4`):
+
+  | Metric | Type | Meaning |
+  | --- | --- | --- |
+  | `green_relay_auth_failures_total` | counter | Rejected auth attempts (invalid, unknown, or locked out) |
+  | `green_relay_rate_limited_total` | counter | Requests rejected by the per-key rate limiter |
+  | `green_relay_messages_accepted_total` | counter | Outbound messages accepted and queued |
+  | `green_relay_messages_sent_total` | counter | Outbound messages confirmed sent |
+  | `green_relay_messages_failed_total` | counter | Outbound messages that failed delivery |
+  | `green_relay_modem_serial_connected` | gauge | Serial port connected (1) or not (0) |
+  | `green_relay_modem_registered` | gauge | Registered to a network (1) or not (0) |
+  | `green_relay_modem_signal_percent` | gauge | Signal strength 0–100 (absent when unknown) |
+
+  Example Prometheus scrape config:
+
+  ```yaml
+  scrape_configs:
+    - job_name: green_relay
+      static_configs:
+        - targets: ["127.0.0.1:8080"]
+  ```
+
+  `/metrics` is unauthenticated, like `/health` and `/status`. Scrape it over a
+  trusted/internal network, or restrict access at the reverse proxy or with a
+  firewall rule; do not expose it directly to the public internet.
+
 ## Releases and packaging
 
 Pushing a `v*` tag triggers the release pipeline, which:
@@ -103,4 +142,7 @@ the modem's serial device.
 ## Continuous integration
 
 Pushes to `main` run `cargo fmt` (auto-committed back), `cargo clippy`, and
-the full test suite. See `.github/workflows/`.
+the full test suite. A supply-chain gate (`cargo deny check` — advisories,
+yanked crates, licenses, and sources) and a coverage report
+(`cargo llvm-cov`, uploaded as an artifact) run alongside. See
+`.github/workflows/`.
