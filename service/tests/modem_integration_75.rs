@@ -169,6 +169,7 @@ fn test_config(service_center: Option<&str>) -> Config {
         reopen_max_attempts: 10,
         send_max_attempts: 3,
         send_retry_delay_secs: 0,
+        admin_cookie_secure: false,
     }
 }
 
@@ -268,7 +269,7 @@ async fn send_sets_text_mode_before_transmitting() {
         .await
         .unwrap();
     assert_eq!(result.status, MessageStatus::Sent);
-    assert_eq!(result.reference, Some(7));
+    assert_eq!(result.reference, Some("7".to_string()));
 
     let cmds = modem.commands();
     let cmgf = cmds
@@ -325,7 +326,7 @@ async fn inbound_urc_reads_persists_then_deletes_in_order() {
     );
 
     // The message is persisted (between the read and the delete) (Req 2.3).
-    let inbound = db.list_inbound_messages().await.unwrap();
+    let inbound = db.list_inbound_messages(100, 0).await.unwrap();
     assert_eq!(inbound.len(), 1);
     assert_eq!(inbound[0].from_number, "+14155550123");
     assert_eq!(inbound[0].body, "Hello from the network");
@@ -358,7 +359,7 @@ async fn inbound_read_failure_retries_three_times_then_audits() {
         !modem.commands().iter().any(|c| c.contains("AT+CMGD")),
         "no delete should be issued when the read fails"
     );
-    assert!(db.list_inbound_messages().await.unwrap().is_empty());
+    assert!(db.list_inbound_messages(100, 0).await.unwrap().is_empty());
     assert!(
         audit_events(&db)
             .await
@@ -386,7 +387,7 @@ async fn inbound_delete_failure_is_audited_and_message_retained() {
         .unwrap();
 
     // The message remains persisted; the delete failure does not undo it.
-    assert_eq!(db.list_inbound_messages().await.unwrap().len(), 1);
+    assert_eq!(db.list_inbound_messages(100, 0).await.unwrap().len(), 1);
     assert!(modem.commands().iter().any(|c| c.contains("AT+CMGD=2")));
     assert!(
         audit_events(&db)

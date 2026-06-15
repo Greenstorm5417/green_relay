@@ -137,6 +137,7 @@ fn test_config() -> Config {
         reopen_max_attempts: 10,
         send_max_attempts: 3,
         send_retry_delay_secs: 1,
+        admin_cookie_secure: false,
     }
 }
 

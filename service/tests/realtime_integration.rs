@@ -72,7 +72,7 @@ fn down_snapshot() -> ModemStatusSnapshot {
 fn sent_result(reference: u32) -> SendResult {
     SendResult {
         status: MessageStatus::Sent,
-        reference: Some(reference),
+        reference: Some(reference.to_string()),
         error_code: None,
         error: None,
     }

@@ -46,7 +46,11 @@ proptest! {
             .checked_add(elapsed)
             .expect("instant + elapsed must not overflow");
 
-        let session = Session { admin_id: 1, last_activity };
+        let session = Session {
+            admin_id: 1,
+            last_activity,
+            csrf_token: "csrf".to_string(),
+        };
 
         let expected_valid = elapsed < SESSION_IDLE_TIMEOUT;
         let actual_valid = session_valid(&session, now);

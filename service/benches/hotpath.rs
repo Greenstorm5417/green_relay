@@ -83,13 +83,25 @@ fn bench_auth_request_flow(c: &mut Criterion) {
 
 fn bench_rate_limiter_check(c: &mut Criterion) {
     // Steady-state: the key already exists, which is the common case on a
-    // busy key. Measures the per-request limiter cost.
-    let mut limiter = RateLimiter::new();
+    // busy key. Measures the per-request limiter cost. The limiter is async
+    // (moka-backed), so each call is driven on a current-thread runtime.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build current-thread runtime");
+    let limiter = RateLimiter::new();
     let window = Duration::from_secs(60);
     let key = key_identifier(SAMPLE_KEY);
-    limiter.check(&key, 1_000_000, window, Instant::now());
+    runtime.block_on(limiter.check(&key, 1_000_000, window, Instant::now()));
     c.bench_function("rate_limiter_check_existing_key", |b| {
-        b.iter(|| black_box(limiter.check(black_box(&key), 1_000_000, window, Instant::now())))
+        b.iter(|| {
+            black_box(runtime.block_on(limiter.check(
+                black_box(&key),
+                1_000_000,
+                window,
+                Instant::now(),
+            )))
+        })
     });
 }
 

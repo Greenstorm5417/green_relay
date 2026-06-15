@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const CUSTOM_LIMIT_MIN: u32 = 1;
@@ -83,34 +83,73 @@ pub fn effective_limit(custom: Option<u32>, default: u32) -> (u32, Option<RateLi
     }
 }
 
-#[derive(Debug, Default)]
+/// Maximum number of distinct keys retained. `moka` evicts least-recently-used
+/// entries beyond this cap and idle entries past the TTL, so no manual sweeping
+/// is required.
+const MAX_TRACKED_KEYS: u64 = 50_000;
+
+/// Idle entries are dropped after this long — far longer than any sane rate
+/// window, so eviction only ever reclaims memory, never affects a decision.
+const ENTRY_TTL: Duration = Duration::from_secs(3600);
+
+/// Per-key sliding-window rate limiter backed by a bounded `moka` cache.
+///
+/// `moka` owns capacity bounding and TTL eviction; each entry is a small
+/// `WindowState` behind a lightweight mutex so the read-modify-write of a single
+/// key's counter stays atomic. Cloning is cheap (the cache is internally
+/// reference-counted).
+#[derive(Clone)]
 pub struct RateLimiter {
-    states: HashMap<String, WindowState>,
+    states: moka::future::Cache<String, Arc<Mutex<WindowState>>>,
 }
 
 impl RateLimiter {
+    /// Creates a new, empty rate limiter.
     pub fn new() -> Self {
         RateLimiter {
-            states: HashMap::new(),
+            states: moka::future::Cache::builder()
+                .max_capacity(MAX_TRACKED_KEYS)
+                .time_to_idle(ENTRY_TTL)
+                .build(),
         }
     }
 
-    pub fn check(&mut self, key: &str, limit: u32, window: Duration, now: Instant) -> RateDecision {
-        if let Some(state) = self.states.get_mut(key) {
-            return decide(state, limit, window, now);
+    /// Records a request for `key` and returns the limiter decision.
+    pub async fn check(
+        &self,
+        key: &str,
+        limit: u32,
+        window: Duration,
+        now: Instant,
+    ) -> RateDecision {
+        let cell = self
+            .states
+            .get_with(key.to_string(), async {
+                Arc::new(Mutex::new(WindowState::new(now)))
+            })
+            .await;
+        let mut state = cell
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        decide(&mut state, limit, window, now)
+    }
+
+    /// Returns the current request count for `key` (0 if untracked).
+    pub async fn count_for(&self, key: &str) -> u32 {
+        match self.states.get(key).await {
+            Some(cell) => {
+                cell.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .count
+            }
+            None => 0,
         }
-        let mut state = WindowState::new(now);
-        let decision = decide(&mut state, limit, window, now);
-        self.states.insert(key.to_string(), state);
-        decision
     }
+}
 
-    pub fn count_for(&self, key: &str) -> u32 {
-        self.states.get(key).map(|s| s.count).unwrap_or(0)
-    }
-
-    pub fn state_for(&self, key: &str) -> Option<&WindowState> {
-        self.states.get(key)
+impl Default for RateLimiter {
+    fn default() -> Self {
+        RateLimiter::new()
     }
 }
 
@@ -225,21 +264,36 @@ mod tests {
         assert_eq!(effective_limit(None, 100), (100, None));
     }
 
-    #[test]
-    fn per_key_state_is_isolated() {
+    #[tokio::test]
+    async fn per_key_state_is_isolated() {
         let now = Instant::now();
         let window = Duration::from_secs(60);
-        let mut limiter = RateLimiter::new();
+        let limiter = RateLimiter::new();
 
         for _ in 0..5 {
-            limiter.check("a", 100, window, now);
+            limiter.check("a", 100, window, now).await;
         }
 
-        limiter.check("b", 100, window, now);
+        limiter.check("b", 100, window, now).await;
 
-        assert_eq!(limiter.count_for("a"), 5);
-        assert_eq!(limiter.count_for("b"), 1);
+        assert_eq!(limiter.count_for("a").await, 5);
+        assert_eq!(limiter.count_for("b").await, 1);
+        assert_eq!(limiter.count_for("c").await, 0);
+    }
 
-        assert_eq!(limiter.count_for("c"), 0);
+    #[tokio::test]
+    async fn check_rejects_once_limit_is_reached() {
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let limiter = RateLimiter::new();
+
+        assert!(matches!(
+            limiter.check("k", 1, window, now).await,
+            RateDecision::Allow { .. }
+        ));
+        assert!(matches!(
+            limiter.check("k", 1, window, now).await,
+            RateDecision::Reject { .. }
+        ));
     }
 }

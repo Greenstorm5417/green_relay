@@ -148,7 +148,8 @@ pub(crate) async fn api_login(
     {
         Ok(LoginResult::Success { token }) => {
             let mut response = StatusCode::OK.into_response();
-            if let Ok(cookie) = HeaderValue::from_str(&session_cookie(&token)) {
+            if let Ok(cookie) = HeaderValue::from_str(&session_cookie(&token, state.cookie_secure()))
+            {
                 response.headers_mut().insert(header::SET_COOKIE, cookie);
             }
             response
@@ -161,7 +162,7 @@ pub(crate) async fn api_login(
         )
             .into_response(),
         Ok(LoginResult::LockedOut) => (
-            StatusCode::LOCKED,
+            StatusCode::TOO_MANY_REQUESTS,
             Json(ApiErrorBody {
                 error: "Account temporarily locked after repeated failed logins.".to_string(),
             }),
@@ -181,7 +182,7 @@ pub(crate) async fn api_logout(State(state): State<AdminState>, headers: HeaderM
             .remove(&token);
     }
     let mut response = StatusCode::OK.into_response();
-    if let Ok(cookie) = HeaderValue::from_str(&clear_cookie()) {
+    if let Ok(cookie) = HeaderValue::from_str(&clear_cookie(state.cookie_secure())) {
         response.headers_mut().insert(header::SET_COOKIE, cookie);
     }
     response

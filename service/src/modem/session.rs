@@ -214,7 +214,7 @@ async fn send_part_with_retries<T: SerialTransport>(
         if outcome.status == MessageStatus::Sent {
             return Ok(SendResult {
                 status: MessageStatus::Sent,
-                reference: outcome.reference,
+                reference: outcome.reference.map(|r| r.to_string()),
                 error_code: None,
                 error: None,
             });

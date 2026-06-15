@@ -55,6 +55,11 @@ pub struct AdminState {
     sessions: Arc<Mutex<SessionStore>>,
     login_tracker: Arc<Mutex<AdminLoginTracker>>,
     modem: Arc<dyn ModemStatusProvider>,
+    /// Shared API-key cache, so revoking a key invalidates the same entry the
+    /// API auth path reads. Defaults to a private cache when not shared.
+    key_cache: crate::keycache::ApiKeyCache,
+    /// Whether the admin session cookie is marked `Secure` (HTTPS-only).
+    cookie_secure: bool,
 }
 
 impl AdminState {
@@ -65,7 +70,37 @@ impl AdminState {
             sessions: Arc::new(Mutex::new(SessionStore::new())),
             login_tracker: Arc::new(Mutex::new(AdminLoginTracker::new())),
             modem,
+            key_cache: crate::keycache::ApiKeyCache::new(),
+            cookie_secure: false,
         }
+    }
+
+    /// Sets whether the admin session cookie is marked `Secure` (HTTPS-only).
+    pub fn with_cookie_secure(mut self, secure: bool) -> Self {
+        self.cookie_secure = secure;
+        self
+    }
+
+    /// Returns whether the admin session cookie should be marked `Secure`.
+    pub(crate) fn cookie_secure(&self) -> bool {
+        self.cookie_secure
+    }
+
+    /// Shares an externally-owned API-key cache with this admin state so
+    /// revocation invalidates the entries the API auth path reads.
+    pub fn with_key_cache(mut self, key_cache: crate::keycache::ApiKeyCache) -> Self {
+        self.key_cache = key_cache;
+        self
+    }
+
+    /// Returns the shared API-key cache (used by key revocation).
+    pub(crate) fn key_cache(&self) -> &crate::keycache::ApiKeyCache {
+        &self.key_cache
+    }
+
+    /// Returns a handle to the session store for the background expiry sweep.
+    pub(crate) fn sessions(&self) -> Arc<Mutex<SessionStore>> {
+        self.sessions.clone()
     }
 }
 

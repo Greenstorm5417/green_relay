@@ -86,6 +86,11 @@ pub async fn revoke_api_key(
     let affected = state.db.set_api_key_revoked(id).await?;
 
     if affected > 0 {
+        // Invalidate the auth-path cache so the revoked key stops
+        // authenticating immediately (the cache has no TTL).
+        if let Some(ref ident) = identifier {
+            state.key_cache().invalidate(ident).await;
+        }
         state
             .db
             .insert_audit(

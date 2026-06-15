@@ -209,9 +209,12 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
 pub fn build_cmgs(to: &str, part: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(to.len().saturating_add(part.len()).saturating_add(12));
     payload.extend_from_slice(b"AT+CMGS=\"");
-    payload.extend_from_slice(to.as_bytes());
+    payload.extend(to.bytes().filter(|b| b.is_ascii_digit() || *b == b'+'));
     payload.extend_from_slice(b"\"\r");
-    payload.extend_from_slice(part.as_bytes());
+    payload.extend(
+        part.bytes()
+            .filter(|b| *b != 0x1A && *b != b'\r' && *b != b'\n'),
+    );
     payload.push(0x1A);
     payload
 }
@@ -297,5 +300,50 @@ mod segment_tests {
 
         let part = b"hi there";
         assert!(payload.windows(part.len()).any(|w| w == part));
+    }
+
+    #[test]
+    fn build_cmgs_strips_at_metacharacters_from_number() {
+        let payload = build_cmgs("+1\"415\x1a5552671", "body");
+
+        let quote_count = payload.iter().filter(|b| **b == b'"').count();
+        assert_eq!(quote_count, 2, "only the two AT command delimiter quotes");
+
+        let terminator_count = payload.iter().filter(|b| **b == 0x1A).count();
+        assert_eq!(terminator_count, 1, "only the appended 0x1A terminator");
+
+        assert_eq!(*payload.last().unwrap(), 0x1A);
+
+        let needle = b"+14155552671";
+        assert!(
+            payload.windows(needle.len()).any(|w| w == needle),
+            "digits and leading + must be preserved in order"
+        );
+    }
+
+    #[test]
+    fn build_cmgs_strips_terminator_and_line_breaks_from_body() {
+        let payload = build_cmgs("+14155552671", "evil\x1abody\r\nmore");
+
+        let terminator_count = payload.iter().filter(|b| **b == 0x1A).count();
+        assert_eq!(terminator_count, 1, "only the appended 0x1A terminator");
+        assert_eq!(*payload.last().unwrap(), 0x1A);
+
+        assert_eq!(
+            payload.iter().filter(|b| **b == b'\r').count(),
+            1,
+            "only the AT command delimiter CR remains; the body CR is stripped"
+        );
+        assert_eq!(
+            payload.iter().filter(|b| **b == b'\n').count(),
+            0,
+            "newlines must be stripped from the body"
+        );
+
+        let needle = b"evilbodymore";
+        assert!(
+            payload.windows(needle.len()).any(|w| w == needle),
+            "body content survives minus control bytes"
+        );
     }
 }

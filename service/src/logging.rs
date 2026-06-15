@@ -15,6 +15,9 @@ const CREDENTIAL_FIELDS: &[&str] = &[
     "credentials",
     "authorization",
     "token",
+    "cookie",
+    "set_cookie",
+    "session",
 ];
 
 /// The placeholder string used for redacted credentials.

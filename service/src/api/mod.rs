@@ -108,8 +108,8 @@ pub struct ApiState {
     pub retry_after_secs: u64,
     /// Authentication failure tracker.
     pub auth_failures: Arc<Mutex<FailureTracker>>,
-    /// Rate limiter instance.
-    pub rate_limiter: Arc<Mutex<RateLimiter>>,
+    /// Per-key rate limiter (moka-backed; concurrent and self-bounding).
+    pub rate_limiter: RateLimiter,
     /// Default rate limit threshold.
     pub default_rate_limit: u32,
     /// Default rate limit window.
@@ -118,6 +118,10 @@ pub struct ApiState {
     pub events: EventBus,
     /// Process-wide service metrics.
     pub metrics: Arc<Metrics>,
+    /// Shared cache of resolved API keys, sparing the DB a lookup on every
+    /// authenticated request. A `None` value is a cached "no such active key".
+    /// No TTL: entries are evicted by capacity or invalidated on revocation.
+    key_cache: crate::keycache::ApiKeyCache,
 }
 
 impl ApiState {
@@ -128,12 +132,37 @@ impl ApiState {
             modem: Arc::new(modem),
             retry_after_secs: DEFAULT_RETRY_AFTER_SECS,
             auth_failures: Arc::new(Mutex::new(FailureTracker::new())),
-            rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            rate_limiter: RateLimiter::new(),
             default_rate_limit: DEFAULT_RATE_LIMIT,
             rate_window: Duration::from_secs(DEFAULT_RATE_WINDOW_SECS),
             events: EventBus::default(),
             metrics: Arc::new(Metrics::new()),
+            key_cache: crate::keycache::ApiKeyCache::new(),
         }
+    }
+
+    /// Shares an externally-owned API-key cache so admin key revocation can
+    /// invalidate the same entries the auth path reads.
+    pub fn with_key_cache(mut self, key_cache: crate::keycache::ApiKeyCache) -> Self {
+        self.key_cache = key_cache;
+        self
+    }
+
+    /// Resolves an active API key, caching the result to keep the hot auth path
+    /// off the database. Errors are not cached; entries are invalidated on
+    /// revocation rather than expiring on a timer.
+    pub async fn resolve_active_key(
+        &self,
+        identifier: &str,
+    ) -> Result<Option<(ApiKeyId, Option<u32>)>, crate::db::DbError> {
+        if let Some(cached) = self.key_cache.get(identifier).await {
+            return Ok(cached);
+        }
+        let resolved = self.db.lookup_active_key(identifier).await?;
+        self.key_cache
+            .insert(identifier.to_string(), resolved)
+            .await;
+        Ok(resolved)
     }
 
     /// Creates a new ApiState with custom retry after value.
@@ -316,11 +345,18 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
 }
 
 fn unauthorized_response() -> Response {
-    (
+    let mut response = (
         StatusCode::UNAUTHORIZED,
         Json(ApiError::new("unauthorized", Vec::new())),
     )
-        .into_response()
+        .into_response();
+    // RFC 7235: a 401 must carry a challenge. The API authenticates via the
+    // `x-api-key` header (or a Bearer token), advertised here.
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("ApiKey, Bearer"),
+    );
+    response
 }
 
 async fn auth_middleware(
@@ -356,7 +392,7 @@ async fn auth_middleware(
         }
     }
 
-    let resolved = match state.db.lookup_active_key(&identifier).await {
+    let resolved = match state.resolve_active_key(&identifier).await {
         Ok(resolved) => resolved,
         Err(_) => {
             return (
@@ -415,13 +451,10 @@ async fn rate_limit_middleware(
     let now = Instant::now();
     let (limit, _config_err) = effective_limit(ctx.custom_rate_limit, state.default_rate_limit);
 
-    let decision = {
-        let mut limiter = state
-            .rate_limiter
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        limiter.check(&ctx.identifier, limit, state.rate_window, now)
-    };
+    let decision = state
+        .rate_limiter
+        .check(&ctx.identifier, limit, state.rate_window, now)
+        .await;
 
     match decision {
         RateDecision::Allow { .. } => next.run(request).await,

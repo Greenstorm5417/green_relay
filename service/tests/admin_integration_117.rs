@@ -180,6 +180,16 @@ impl Response {
             Some(token.to_string())
         }
     }
+
+    /// Scrape the CSRF synchronizer token from the first hidden input in the
+    /// rendered HTML body.
+    fn csrf_token(&self) -> Option<String> {
+        let marker = "name=\"csrf_token\" value=\"";
+        let start = self.body.find(marker)? + marker.len();
+        let rest = &self.body[start..];
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    }
 }
 
 // -- request builders -------------------------------------------------------
@@ -218,6 +228,27 @@ fn post_with_cookie(path: &str, token: &str) -> Request<Body> {
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(Body::empty())
         .unwrap()
+}
+
+/// POST a form body together with the session cookie (used for CSRF-protected
+/// state-changing routes).
+fn post_form_with_cookie(path: &str, token: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(body.to_owned()))
+        .unwrap()
+}
+
+/// Fetch a protected page and scrape its CSRF token.
+async fn fetch_csrf(harness: &Harness, path: &str, token: &str) -> String {
+    harness
+        .send(get_with_cookie(path, token))
+        .await
+        .csrf_token()
+        .expect("protected page embeds a CSRF token")
 }
 
 /// Log in as the seeded admin and return the granted session token.
@@ -315,9 +346,14 @@ async fn logout_invalidates_session_and_blocks_further_access() {
     let before = harness.send(get_with_cookie("/admin", &token)).await;
     assert_eq!(before.status, StatusCode::OK);
 
-    // Logout terminates the session and clears the cookie.
+    // Logout terminates the session and clears the cookie (CSRF-protected).
+    let csrf = fetch_csrf(&harness, "/admin", &token).await;
     let logout = harness
-        .send(post_with_cookie("/admin/logout", &token))
+        .send(post_form_with_cookie(
+            "/admin/logout",
+            &token,
+            &format!("csrf_token={csrf}"),
+        ))
         .await;
     assert_eq!(logout.status, StatusCode::SEE_OTHER);
     assert_eq!(logout.location.as_deref(), Some("/admin/login"));
@@ -370,9 +406,16 @@ async fn create_view_and_revoke_api_keys() {
     let empty = harness.send(get_with_cookie("/admin/keys", &token)).await;
     assert_eq!(empty.status, StatusCode::OK);
     assert!(empty.body.contains("No API keys."));
+    let csrf = empty.csrf_token().expect("keys page embeds a CSRF token");
 
     // Create a key (Req 5.6). The one-time plaintext key is shown once.
-    let created = harness.send(post_with_cookie("/admin/keys", &token)).await;
+    let created = harness
+        .send(post_form_with_cookie(
+            "/admin/keys",
+            &token,
+            &format!("csrf_token={csrf}"),
+        ))
+        .await;
     assert_eq!(created.status, StatusCode::OK);
     assert!(
         created.body.contains("sk_"),
@@ -390,11 +433,13 @@ async fn create_view_and_revoke_api_keys() {
         .await
         .expect("one api key persisted");
 
-    // Revoke it (Req 5.6) -> redirect back to the key list.
+    // Revoke it (Req 5.6) -> redirect back to the key list (CSRF-protected).
+    let revoke_csrf = fetch_csrf(&harness, "/admin/keys", &token).await;
     let revoke = harness
-        .send(post_with_cookie(
+        .send(post_form_with_cookie(
             &format!("/admin/keys/{id}/revoke"),
             &token,
+            &format!("csrf_token={revoke_csrf}"),
         ))
         .await;
     assert_eq!(revoke.status, StatusCode::SEE_OTHER);
@@ -431,4 +476,31 @@ async fn key_management_requires_authentication() {
         .await
         .expect("count keys");
     assert_eq!(count, 0, "an unauthenticated request creates no key");
+}
+
+#[tokio::test]
+async fn state_changing_post_without_csrf_token_is_forbidden() {
+    let harness = Harness::build().await;
+    harness.seed_admin("admin", "pw1234").await;
+    let token = login(&harness, "admin", "pw1234").await;
+
+    // A valid session but no CSRF token -> 403, and no key is created.
+    let create = harness.send(post_with_cookie("/admin/keys", &token)).await;
+    assert_eq!(create.status, StatusCode::FORBIDDEN);
+
+    // A wrong CSRF token is likewise rejected.
+    let bad = harness
+        .send(post_form_with_cookie(
+            "/admin/keys",
+            &token,
+            "csrf_token=not-the-real-token",
+        ))
+        .await;
+    assert_eq!(bad.status, StatusCode::FORBIDDEN);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_keys")
+        .fetch_one(harness.db.pool())
+        .await
+        .expect("count keys");
+    assert_eq!(count, 0, "CSRF-rejected requests create no key");
 }

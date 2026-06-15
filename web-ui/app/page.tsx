@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AppShell } from "@/components/AppShell";
 import { Card } from "@/components/Card";
@@ -40,12 +40,16 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     if (auth !== "authenticated") return;
     let active = true;
 
     function load() {
+      // Skip if a poll is still running so slow fetches don't pile up.
+      if (inFlight.current) return;
+      inFlight.current = true;
       api
         .dashboard()
         .then((d) => {
@@ -58,6 +62,7 @@ export default function DashboardPage() {
           if (active) setError(err instanceof Error ? err.message : "Failed to load.");
         })
         .finally(() => {
+          inFlight.current = false;
           if (active) setLoading(false);
         });
     }

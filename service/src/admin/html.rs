@@ -16,7 +16,23 @@ use super::AdminState;
 use super::dashboard::{DashboardData, dashboard_data};
 use super::keys::{ApiKeyView, create_api_key, list_api_keys, revoke_api_key};
 use super::login::{LoginForm, LoginResult, perform_login};
-use super::session::{Authz, authorize, clear_cookie, session_cookie, session_token_from_headers};
+use super::session::{
+    Authz, authorize, clear_cookie, csrf_token_for_request, csrf_valid, session_cookie,
+    session_token_from_headers,
+};
+
+/// Hidden-field payload carrying the CSRF synchronizer token on POST forms.
+#[derive(serde::Deserialize)]
+pub(crate) struct CsrfForm {
+    #[serde(default)]
+    csrf_token: String,
+}
+
+fn forbidden() -> Response {
+    (StatusCode::FORBIDDEN, Html("<h1>Invalid or missing CSRF token</h1>".to_string()))
+        .into_response()
+}
+
 
 pub(crate) async fn login_form() -> Html<String> {
     Html(render_login(None))
@@ -37,7 +53,8 @@ pub(crate) async fn login_submit(
     {
         Ok(LoginResult::Success { token }) => {
             let mut response = Redirect::to("/admin").into_response();
-            if let Ok(cookie) = HeaderValue::from_str(&session_cookie(&token)) {
+            if let Ok(cookie) = HeaderValue::from_str(&session_cookie(&token, state.cookie_secure()))
+            {
                 response.headers_mut().insert(header::SET_COOKIE, cookie);
             }
             response
@@ -64,7 +81,18 @@ pub(crate) async fn login_submit(
     }
 }
 
-pub(crate) async fn logout(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+pub(crate) async fn logout(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
+        return Redirect::to("/admin/login").into_response();
+    }
+    if !csrf_valid(&state, &headers, &form.csrf_token, now) {
+        return forbidden();
+    }
     if let Some(token) = session_token_from_headers(&headers) {
         state
             .sessions
@@ -73,18 +101,20 @@ pub(crate) async fn logout(State(state): State<AdminState>, headers: HeaderMap) 
             .remove(&token);
     }
     let mut response = Redirect::to("/admin/login").into_response();
-    if let Ok(cookie) = HeaderValue::from_str(&clear_cookie()) {
+    if let Ok(cookie) = HeaderValue::from_str(&clear_cookie(state.cookie_secure())) {
         response.headers_mut().insert(header::SET_COOKIE, cookie);
     }
     response
 }
 
 pub(crate) async fn dashboard(State(state): State<AdminState>, headers: HeaderMap) -> Response {
-    if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
         return Redirect::to("/admin/login").into_response();
     }
+    let csrf = csrf_token_for_request(&state, &headers, now).unwrap_or_default();
     match dashboard_data(&state, Utc::now()).await {
-        Ok(data) => Html(render_dashboard(&data)).into_response(),
+        Ok(data) => Html(render_dashboard(&data, &csrf)).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Html("<h1>Dashboard unavailable</h1>".to_string()),
@@ -94,11 +124,13 @@ pub(crate) async fn dashboard(State(state): State<AdminState>, headers: HeaderMa
 }
 
 pub(crate) async fn keys_view(State(state): State<AdminState>, headers: HeaderMap) -> Response {
-    if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
         return Redirect::to("/admin/login").into_response();
     }
+    let csrf = csrf_token_for_request(&state, &headers, now).unwrap_or_default();
     match list_api_keys(&state).await {
-        Ok(keys) => Html(render_keys(&keys, None)).into_response(),
+        Ok(keys) => Html(render_keys(&keys, None, &csrf)).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Html("<h1>Unable to load API keys</h1>".to_string()),
@@ -107,13 +139,22 @@ pub(crate) async fn keys_view(State(state): State<AdminState>, headers: HeaderMa
     }
 }
 
-pub(crate) async fn keys_create(State(state): State<AdminState>, headers: HeaderMap) -> Response {
-    if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
+pub(crate) async fn keys_create(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
         return Redirect::to("/admin/login").into_response();
     }
+    if !csrf_valid(&state, &headers, &form.csrf_token, now) {
+        return forbidden();
+    }
+    let csrf = csrf_token_for_request(&state, &headers, now).unwrap_or_default();
     match create_api_key(&state, Utc::now()).await {
         Ok((plaintext, _)) => match list_api_keys(&state).await {
-            Ok(keys) => Html(render_keys(&keys, Some(&plaintext))).into_response(),
+            Ok(keys) => Html(render_keys(&keys, Some(&plaintext), &csrf)).into_response(),
             Err(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("<h1>Key created but listing failed</h1>".to_string()),
@@ -132,9 +173,14 @@ pub(crate) async fn keys_revoke(
     State(state): State<AdminState>,
     headers: HeaderMap,
     Path(id): Path<i64>,
+    Form(form): Form<CsrfForm>,
 ) -> Response {
-    if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
         return Redirect::to("/admin/login").into_response();
+    }
+    if !csrf_valid(&state, &headers, &form.csrf_token, now) {
+        return forbidden();
     }
     match revoke_api_key(&state, id, Utc::now()).await {
         Ok(_) => Redirect::to("/admin/keys").into_response(),
@@ -177,7 +223,14 @@ fn health_label(health: ServiceHealth) -> &'static str {
     }
 }
 
-fn render_dashboard(data: &DashboardData) -> String {
+fn csrf_input(csrf: &str) -> String {
+    format!(
+        "<input type=\"hidden\" name=\"csrf_token\" value=\"{}\">",
+        esc(csrf)
+    )
+}
+
+fn render_dashboard(data: &DashboardData, csrf: &str) -> String {
     let signal = match data.signal_percent {
         Some(p) => format!("{p}%"),
         None => "unavailable".to_string(),
@@ -203,13 +256,14 @@ fn render_dashboard(data: &DashboardData) -> String {
          <p>Signal quality: <strong>{signal}</strong></p>\
          <h2>Recent activity (last 24h)</h2><ul>{activity}</ul>\
          <p><a href=\"/admin/keys\">Manage API keys</a></p>\
-         <form method=\"post\" action=\"/admin/logout\"><button type=\"submit\">Sign out</button></form>\
+         <form method=\"post\" action=\"/admin/logout\">{logout_csrf}<button type=\"submit\">Sign out</button></form>\
          </body></html>",
-        health_label(data.health)
+        health_label(data.health),
+        logout_csrf = csrf_input(csrf)
     )
 }
 
-fn render_keys(keys: &[ApiKeyView], new_key: Option<&str>) -> String {
+fn render_keys(keys: &[ApiKeyView], new_key: Option<&str>, csrf: &str) -> String {
     let banner = match new_key {
         Some(key) => format!(
             "<p class=\"new-key\">New API key (copy it now, it will not be shown again): \
@@ -227,9 +281,10 @@ fn render_keys(keys: &[ApiKeyView], new_key: Option<&str>) -> String {
                     "revoked".to_string()
                 } else {
                     format!(
-                        "<form method=\"post\" action=\"/admin/keys/{}/revoke\">\
+                        "<form method=\"post\" action=\"/admin/keys/{}/revoke\">{}\
                          <button type=\"submit\">Revoke</button></form>",
-                        k.id
+                        k.id,
+                        csrf_input(csrf)
                     )
                 };
                 format!(
@@ -245,11 +300,12 @@ fn render_keys(keys: &[ApiKeyView], new_key: Option<&str>) -> String {
     format!(
         "<!DOCTYPE html><html><head><title>API Keys</title></head><body>\
          <h1>API Keys</h1>{banner}\
-         <form method=\"post\" action=\"/admin/keys\"><button type=\"submit\">Create new key</button></form>\
+         <form method=\"post\" action=\"/admin/keys\">{create_csrf}<button type=\"submit\">Create new key</button></form>\
          <table><thead><tr><th>ID</th><th>Identifier</th><th>Created</th><th>Action</th></tr></thead>\
          <tbody>{rows}</tbody></table>\
          <p><a href=\"/admin\">Back to dashboard</a></p>\
-         </body></html>"
+         </body></html>",
+        create_csrf = csrf_input(csrf)
     )
 }
 
@@ -267,7 +323,7 @@ mod tests {
             revoked: false,
             created_at: Utc::now(),
         }];
-        let html = render_keys(&keys, Some("<b>plain</b>"));
+        let html = render_keys(&keys, Some("<b>plain</b>"), "tok");
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
     }

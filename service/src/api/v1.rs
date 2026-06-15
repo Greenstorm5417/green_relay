@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use axum::{
     Json,
-    extract::{Path, State, rejection::JsonRejection},
+    extract::{Path, Query, State, rejection::JsonRejection},
     http::StatusCode,
     response::{
         IntoResponse, Response,
@@ -41,6 +41,30 @@ use super::{ApiState, SharedModem, json_with_retry_after};
 /// Maximum time the synchronous send endpoint waits for delivery to complete
 /// before falling back to a `202 Accepted` queued response.
 const SYNC_SEND_WAIT_SECS: u64 = 30;
+
+/// Default and maximum page sizes for paginated list endpoints.
+const DEFAULT_PAGE_LIMIT: i64 = 100;
+const MAX_PAGE_LIMIT: i64 = 1000;
+
+/// Pagination query parameters (`?limit=&offset=`) for list endpoints.
+#[derive(Debug, Deserialize)]
+struct Pagination {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+impl Pagination {
+    /// Resolves to a clamped `(limit, offset)`: limit in `1..=MAX_PAGE_LIMIT`,
+    /// offset non-negative. Defaults apply when a parameter is absent.
+    fn resolve(&self) -> (i64, i64) {
+        let limit = self
+            .limit
+            .unwrap_or(DEFAULT_PAGE_LIMIT)
+            .clamp(1, MAX_PAGE_LIMIT);
+        let offset = self.offset.unwrap_or(0).max(0);
+        (limit, offset)
+    }
+}
 
 /// Payload for sending an SMS.
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
@@ -411,7 +435,7 @@ async fn dispatch_send(
     let result = modem.send(to, body).await;
     let outcome = match result.status {
         MessageStatus::Sent => {
-            let reference = result.reference.map(|r| r.to_string());
+            let reference = result.reference;
             let _ = db
                 .set_outbound_status(id, MessageStatus::Sent, reference.as_deref(), None)
                 .await;
@@ -501,6 +525,10 @@ fn sse_event(event: &ServiceEvent) -> Result<Event, axum::Error> {
     path = "/api/v1/messages/inbound",
     tag = "messages",
     security(("api_key" = [])),
+    params(
+        ("limit" = Option<i64>, Query, description = "Max messages to return (1-1000, default 100)"),
+        ("offset" = Option<i64>, Query, description = "Number of messages to skip (default 0)")
+    ),
     responses(
         (status = 200, description = "Inbound messages ordered by receipt time descending", body = Vec<InboundMessage>),
         (status = 401, description = "Missing or invalid API key", body = ApiError),
@@ -511,8 +539,12 @@ fn sse_event(event: &ServiceEvent) -> Result<Event, axum::Error> {
             headers(("Retry-After" = String, description = "Seconds to wait before retrying")))
     )
 )]
-async fn inbound_handler(State(state): State<ApiState>) -> Response {
-    match state.db.list_inbound_messages().await {
+async fn inbound_handler(
+    State(state): State<ApiState>,
+    Query(page): Query<Pagination>,
+) -> Response {
+    let (limit, offset) = page.resolve();
+    match state.db.list_inbound_messages(limit, offset).await {
         Ok(messages) => (StatusCode::OK, Json(messages)).into_response(),
         Err(err) => db_error_response(&err, state.retry_after_secs),
     }
@@ -798,7 +830,7 @@ mod tests {
             snapshot: healthy_snapshot(),
             result: SendResult {
                 status: MessageStatus::Sent,
-                reference: Some(42),
+                reference: Some("42".to_string()),
                 error_code: None,
                 error: None,
             },

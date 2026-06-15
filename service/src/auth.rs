@@ -64,7 +64,7 @@ fn to_hex(bytes: &[u8]) -> String {
 
 /// Checks if the presented key length is within allowed limits.
 pub fn passes_guard(presented: &str) -> bool {
-    let len = presented.chars().count();
+    let len = presented.len();
     (1..=MAX_KEY_LEN).contains(&len)
 }
 

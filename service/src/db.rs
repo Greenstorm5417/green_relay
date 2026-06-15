@@ -15,10 +15,18 @@ struct Migration {
 
 const SCHEMA_V1: &str = include_str!("sql/schema_v1.sql");
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: SCHEMA_V1,
-}];
+const SCHEMA_V2: &str = include_str!("sql/schema_v2.sql");
+
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: SCHEMA_V1,
+    },
+    Migration {
+        version: 2,
+        sql: SCHEMA_V2,
+    },
+];
 
 pub use crate::error::DbError;
 
@@ -556,17 +564,46 @@ impl Db {
         }
     }
 
-    /// Lists all inbound messages in descending order of receipt.
-    pub async fn list_inbound_messages(&self) -> Result<Vec<InboundMessage>, DbError> {
+    /// Lists inbound messages in descending order of receipt, paginated.
+    pub async fn list_inbound_messages(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<InboundMessage>, DbError> {
         let rows = sqlx::query(
             "SELECT id, from_number, body, received_at \
                FROM inbound_messages \
-              ORDER BY received_at DESC, id DESC",
+              ORDER BY received_at DESC, id DESC \
+              LIMIT ? OFFSET ?",
         )
+        .bind(limit)
+        .bind(offset)
         .fetch_all(self.pool())
         .await?;
 
         rows.iter().map(inbound_from_row).collect()
+    }
+
+    /// Returns queued outbound messages created before `older_than` (RFC3339),
+    /// oldest first, for the background retry reaper.
+    pub async fn queued_outbound_messages(
+        &self,
+        older_than: &str,
+        limit: i64,
+    ) -> Result<Vec<OutboundMessage>, DbError> {
+        let rows = sqlx::query(
+            "SELECT id, to_number, body, status, part_count, msg_reference, error_code, created_at, updated_at \
+               FROM outbound_messages \
+              WHERE status = ? AND created_at < ? \
+              ORDER BY created_at ASC LIMIT ?",
+        )
+        .bind(MessageStatus::Queued.as_db_str())
+        .bind(older_than)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+
+        rows.iter().map(outbound_from_row).collect()
     }
 
     /// Create a new admin user, or reset an existing one's password.
@@ -791,7 +828,7 @@ mod tests {
         let db = Db::connect_in_memory().await.unwrap();
         db.run_migrations().await.unwrap();
 
-        let listed = db.list_inbound_messages().await.unwrap();
+        let listed = db.list_inbound_messages(100, 0).await.unwrap();
         assert!(listed.is_empty());
     }
 
@@ -816,7 +853,7 @@ mod tests {
             .await
             .unwrap();
 
-        let listed = db.list_inbound_messages().await.unwrap();
+        let listed = db.list_inbound_messages(100, 0).await.unwrap();
         assert_eq!(listed.len(), 4);
         assert_eq!(listed[0], m4);
         assert_eq!(listed[1], m3);

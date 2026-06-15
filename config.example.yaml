@@ -62,3 +62,8 @@ DATABASE_PATH: "./sms.db"
 
 # Delay between send retries, in seconds.
 #SEND_RETRY_DELAY_SECS: 5
+
+# Mark the admin session cookie `Secure` so browsers only send it over HTTPS.
+# Leave false for plain-HTTP deployments (e.g. a LAN Raspberry Pi); enable when
+# the admin portal is served behind HTTPS/TLS.
+#ADMIN_COOKIE_SECURE: false

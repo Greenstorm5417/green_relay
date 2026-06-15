@@ -128,6 +128,7 @@ fn test_config() -> Config {
         reopen_max_attempts: 10,
         send_max_attempts: 2,
         send_retry_delay_secs: 0,
+        admin_cookie_secure: false,
     }
 }
 
@@ -167,7 +168,7 @@ async fn send_retries_after_transient_error_then_succeeds() {
         .expect("send completes without an I/O error");
 
     assert_eq!(result.status, MessageStatus::Sent);
-    assert_eq!(result.reference, Some(7));
+    assert_eq!(result.reference, Some("7".to_string()));
 }
 
 #[tokio::test]
@@ -210,7 +211,7 @@ async fn noisy_unsolicited_lines_before_terminators_are_tolerated() {
         .expect("send completes without an I/O error");
 
     assert_eq!(result.status, MessageStatus::Sent);
-    assert_eq!(result.reference, Some(9));
+    assert_eq!(result.reference, Some("9".to_string()));
 }
 
 #[tokio::test]

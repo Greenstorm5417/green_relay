@@ -116,7 +116,7 @@ proptest! {
             let db = fresh_db(&file).await;
 
             // Empty input yields an empty collection.
-            let empty = db.list_inbound_messages().await.expect("list empty");
+            let empty = db.list_inbound_messages(1000, 0).await.expect("list empty");
             prop_assert!(empty.is_empty(), "empty table must list as empty");
 
             // Persist every generated record, retaining exactly what was
@@ -130,7 +130,7 @@ proptest! {
                 created.push(rec);
             }
 
-            let listed = db.list_inbound_messages().await.expect("list inbound");
+            let listed = db.list_inbound_messages(1000, 0).await.expect("list inbound");
 
             // 1. Lossless: the listing returns exactly the persisted multiset,
             //    every record exactly once. Comparing id-sorted vectors proves

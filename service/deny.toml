@@ -6,11 +6,13 @@
 
 [advisories]
 version = 2
-# Fail on yanked crates. Vulnerabilities fail by default. Unmaintained/notice
-# advisories surface as warnings only (e.g. serde_yaml is archived but
-# API-frozen and parses only trusted local config), so they do not break CI.
+# Fail on yanked crates. Vulnerabilities fail by default.
 yanked = "deny"
-ignore = []
+# `paste` (RUSTSEC-2024-0436) is flagged unmaintained, but has no known
+# vulnerability and no safe upgrade. It is a transitive dependency of
+# `utoipa-axum` (OpenAPI routing) that cannot be dropped, so the advisory is
+# explicitly acknowledged here. Revisit if utoipa-axum drops the `paste` dep.
+ignore = ["RUSTSEC-2024-0436"]
 
 [licenses]
 version = 2

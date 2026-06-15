@@ -6,7 +6,7 @@
 // credentials. The expected endpoints (to be served by the service) are:
 //
 //   GET    /api/admin/session            -> 200 when authenticated, else 401
-//   POST   /api/admin/login              -> 200 | 401 (bad creds) | 423 (locked)
+//   POST   /api/admin/login              -> 200 | 401 (bad creds) | 429 (locked)
 //   POST   /api/admin/logout             -> 200
 //   GET    /api/admin/dashboard          -> DashboardData
 //   GET    /api/admin/keys               -> ApiKey[]
@@ -37,7 +37,7 @@ export class ApiError extends Error {
   }
 
   get isLocked(): boolean {
-    return this.status === 423;
+    return this.status === 429;
   }
 }
 
@@ -73,7 +73,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 /** Best-effort extraction of a human-readable error message from a response. */
 async function errorMessage(response: Response): Promise<string> {
   try {
-    const text = await response.text();
+    // Read from a clone so the original response body is never consumed twice.
+    const text = await response.clone().text();
     if (!text) {
       return `Request failed (${response.status}).`;
     }

@@ -46,7 +46,7 @@ use transport::open_serial;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendResult {
     pub status: MessageStatus,
-    pub reference: Option<u32>,
+    pub reference: Option<String>,
     pub error_code: Option<u16>,
     pub error: Option<String>,
 }

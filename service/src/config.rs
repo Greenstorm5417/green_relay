@@ -50,6 +50,10 @@ pub const KEY_SEND_MAX_ATTEMPTS: &str = "SEND_MAX_ATTEMPTS";
 /// The environment variable or configuration key for the message send retry delay.
 pub const KEY_SEND_RETRY_DELAY_SECS: &str = "SEND_RETRY_DELAY_SECS";
 
+/// The environment variable or configuration key controlling whether the admin
+/// session cookie carries the `Secure` attribute (enable behind HTTPS).
+pub const KEY_ADMIN_COOKIE_SECURE: &str = "ADMIN_COOKIE_SECURE";
+
 /// The environment variable specifying the path to the configuration file.
 pub const KEY_CONFIG_FILE: &str = "SMS_CONFIG_FILE";
 
@@ -74,6 +78,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     KEY_REOPEN_MAX_ATTEMPTS,
     KEY_SEND_MAX_ATTEMPTS,
     KEY_SEND_RETRY_DELAY_SECS,
+    KEY_ADMIN_COOKIE_SECURE,
 ];
 
 /// Represents the log verbosity level.
@@ -171,6 +176,9 @@ pub struct Config {
 
     /// The delay in seconds between message send retries.
     pub send_retry_delay_secs: u64,
+
+    /// Whether the admin session cookie is marked `Secure` (HTTPS-only).
+    pub admin_cookie_secure: bool,
 }
 
 pub use crate::error::ConfigError;
@@ -303,26 +311,42 @@ impl Config {
         };
 
         let log_max_files = parse_u32_or_default(map, KEY_LOG_MAX_FILES, 7)?;
+        if log_max_files > 10_000 {
+            return Err(out_of_range(
+                map,
+                KEY_LOG_MAX_FILES,
+                "must be at most 10000",
+            ));
+        }
 
         let reopen_max_attempts = parse_u32_or_default(map, KEY_REOPEN_MAX_ATTEMPTS, 10)?;
-        if reopen_max_attempts == 0 {
+        if !(1..=1000).contains(&reopen_max_attempts) {
             return Err(out_of_range(
                 map,
                 KEY_REOPEN_MAX_ATTEMPTS,
-                "must be at least 1",
+                "must be between 1 and 1000",
             ));
         }
 
         let send_max_attempts = parse_u32_or_default(map, KEY_SEND_MAX_ATTEMPTS, 3)?;
-        if send_max_attempts == 0 {
+        if !(1..=100).contains(&send_max_attempts) {
             return Err(out_of_range(
                 map,
                 KEY_SEND_MAX_ATTEMPTS,
-                "must be at least 1",
+                "must be between 1 and 100",
             ));
         }
 
         let send_retry_delay_secs = parse_u64_or_default(map, KEY_SEND_RETRY_DELAY_SECS, 5)?;
+        if send_retry_delay_secs > 3600 {
+            return Err(out_of_range(
+                map,
+                KEY_SEND_RETRY_DELAY_SECS,
+                "must be at most 3600 seconds",
+            ));
+        }
+
+        let admin_cookie_secure = parse_bool_or_default(map, KEY_ADMIN_COOKIE_SECURE, false)?;
 
         Ok(Config {
             listen_addr,
@@ -341,6 +365,7 @@ impl Config {
             reopen_max_attempts,
             send_max_attempts,
             send_retry_delay_secs,
+            admin_cookie_secure,
         })
     }
 }
@@ -386,6 +411,25 @@ fn parse_u64_or_default(
             value: raw,
             reason: "expected a non-negative integer".to_string(),
         }),
+    }
+}
+
+fn parse_bool_or_default(
+    map: &HashMap<String, String>,
+    key: &str,
+    default: bool,
+) -> Result<bool, ConfigError> {
+    match optional_string(map, key) {
+        None => Ok(default),
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            _ => Err(ConfigError::InvalidValue {
+                key: key.to_string(),
+                value: raw,
+                reason: "expected a boolean (true/false)".to_string(),
+            }),
+        },
     }
 }
 
@@ -626,6 +670,18 @@ mod tests {
         assert_eq!(config.reopen_max_attempts, 10);
         assert_eq!(config.send_max_attempts, 3);
         assert_eq!(config.send_retry_delay_secs, 5);
+        assert!(!config.admin_cookie_secure);
+    }
+
+    #[test]
+    fn admin_cookie_secure_parses_boolean() {
+        let mut map = minimal_valid_map();
+        map.insert(KEY_ADMIN_COOKIE_SECURE.to_string(), "true".to_string());
+        let config = Config::from_map(&map).expect("boolean true should parse");
+        assert!(config.admin_cookie_secure);
+
+        map.insert(KEY_ADMIN_COOKIE_SECURE.to_string(), "notabool".to_string());
+        assert!(Config::from_map(&map).is_err());
     }
 
     #[test]

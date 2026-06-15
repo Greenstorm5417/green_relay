@@ -41,12 +41,15 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
 pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// An admin session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     /// The ID of the admin.
     pub admin_id: i64,
     /// The timestamp of the last activity.
     pub last_activity: Instant,
+    /// The per-session CSRF synchronizer token embedded in server-rendered
+    /// forms and required on state-changing POSTs.
+    pub csrf_token: String,
 }
 
 /// Checks if a session is still valid.
@@ -119,9 +122,18 @@ impl SessionStore {
             Session {
                 admin_id,
                 last_activity: now,
+                csrf_token: random_token(),
             },
         );
         token
+    }
+
+    /// Returns the CSRF token bound to a still-valid session, if any.
+    pub fn csrf_token(&self, token: &str, now: Instant) -> Option<String> {
+        self.sessions
+            .get(token)
+            .filter(|session| session_valid(session, now))
+            .map(|session| session.csrf_token.clone())
     }
 
     /// Validates a session token.
@@ -142,6 +154,13 @@ impl SessionStore {
     /// Removes a session token from the store.
     pub fn remove(&mut self, token: &str) {
         self.sessions.remove(token);
+    }
+
+    /// Drops every expired session, bounding memory against abandoned sessions
+    /// that are never accessed again. Called periodically by a background sweep.
+    pub fn sweep_expired(&mut self, now: Instant) {
+        self.sessions
+            .retain(|_, session| session_valid(session, now));
     }
 }
 
@@ -242,15 +261,45 @@ fn to_hex(bytes: &[u8]) -> String {
     s
 }
 
-pub(crate) fn session_cookie(token: &str) -> String {
+pub(crate) fn session_cookie(token: &str, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
     format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{secure_attr}; Max-Age={}",
         SESSION_IDLE_TIMEOUT.as_secs()
     )
 }
 
-pub(crate) fn clear_cookie() -> String {
-    format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+pub(crate) fn clear_cookie(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/{secure_attr}; Max-Age=0")
+}
+
+/// Returns the CSRF token for the request's session, gated on a valid session.
+pub(crate) fn csrf_token_for_request(
+    state: &AdminState,
+    headers: &HeaderMap,
+    now: Instant,
+) -> Option<String> {
+    let token = session_token_from_headers(headers)?;
+    let sessions = state
+        .sessions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    sessions.csrf_token(&token, now)
+}
+
+/// Constant-time-ish comparison that the submitted CSRF token matches the one
+/// bound to the request's valid session.
+pub(crate) fn csrf_valid(
+    state: &AdminState,
+    headers: &HeaderMap,
+    submitted: &str,
+    now: Instant,
+) -> bool {
+    match csrf_token_for_request(state, headers, now) {
+        Some(expected) => !expected.is_empty() && expected == submitted,
+        None => false,
+    }
 }
 
 pub(crate) fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -262,7 +311,7 @@ fn parse_cookie(header_value: &str, name: &str) -> Option<String> {
     header_value.split(';').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
         if k.trim() == name {
-            Some(v.trim().to_string())
+            Some(v.trim().trim_matches('"').to_string())
         } else {
             None
         }
@@ -311,6 +360,7 @@ mod tests {
         let session = Session {
             admin_id: 1,
             last_activity: now - (SESSION_IDLE_TIMEOUT - Duration::from_secs(1)),
+            csrf_token: "csrf".to_string(),
         };
         assert!(session_valid(&session, now));
     }
@@ -321,10 +371,12 @@ mod tests {
         let at_boundary = Session {
             admin_id: 1,
             last_activity: now - SESSION_IDLE_TIMEOUT,
+            csrf_token: "csrf".to_string(),
         };
         let past_boundary = Session {
             admin_id: 1,
             last_activity: now - (SESSION_IDLE_TIMEOUT + Duration::from_secs(1)),
+            csrf_token: "csrf".to_string(),
         };
         assert!(!session_valid(&at_boundary, now));
         assert!(!session_valid(&past_boundary, now));
@@ -374,12 +426,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_cookie_strips_surrounding_quotes() {
+        assert_eq!(
+            parse_cookie("admin_session=\"tok123\"", SESSION_COOKIE).as_deref(),
+            Some("tok123")
+        );
+    }
+
+    #[test]
+    fn parse_cookie_keeps_equals_inside_value() {
+        assert_eq!(
+            parse_cookie("admin_session=ab=cd", SESSION_COOKIE).as_deref(),
+            Some("ab=cd")
+        );
+    }
+
+    #[test]
+    fn sweep_drops_only_expired_sessions() {
+        let mut store = SessionStore::new();
+        let start = Instant::now();
+        let live = store.create(1, start);
+        let stale = store.create(2, start);
+
+        let later = start + SESSION_IDLE_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(store.validate(&live, later), Some(1));
+
+        let sweep_at = start + SESSION_IDLE_TIMEOUT + Duration::from_secs(1);
+        store.sweep_expired(sweep_at);
+
+        assert_eq!(store.validate(&live, sweep_at), Some(1));
+        assert_eq!(store.validate(&stale, sweep_at), None);
+    }
+
+    #[test]
     fn session_cookie_is_httponly_and_scoped() {
-        let cookie = session_cookie("abc");
+        let cookie = session_cookie("abc", false);
         assert!(cookie.contains("admin_session=abc"));
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Strict"));
         assert!(cookie.contains("Path=/"));
+        assert!(!cookie.contains("Secure"));
+    }
+
+    #[test]
+    fn session_cookie_secure_flag_when_enabled() {
+        let cookie = session_cookie("abc", true);
+        assert!(cookie.contains("; Secure"));
+        let cleared = clear_cookie(true);
+        assert!(cleared.contains("; Secure"));
+        assert!(cleared.contains("Max-Age=0"));
     }
 
     #[tokio::test]
