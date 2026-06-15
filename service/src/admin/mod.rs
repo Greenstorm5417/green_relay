@@ -72,7 +72,10 @@ impl AdminState {
 /// Builds the admin routes router.
 pub fn router(state: AdminState) -> Router {
     Router::new()
-        .route("/admin/login", get(html::login_form).post(html::login_submit))
+        .route(
+            "/admin/login",
+            get(html::login_form).post(html::login_submit),
+        )
         .route("/admin/logout", post(html::logout))
         .route("/admin", get(html::dashboard))
         .route("/admin/keys", get(html::keys_view).post(html::keys_create))

@@ -16,9 +16,7 @@ use super::AdminState;
 use super::dashboard::{DashboardData, dashboard_data};
 use super::keys::{ApiKeyView, create_api_key, list_api_keys, revoke_api_key};
 use super::login::{LoginForm, LoginResult, perform_login};
-use super::session::{
-    Authz, authorize, clear_cookie, session_cookie, session_token_from_headers,
-};
+use super::session::{Authz, authorize, clear_cookie, session_cookie, session_token_from_headers};
 
 pub(crate) async fn login_form() -> Html<String> {
     Html(render_login(None))

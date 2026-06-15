@@ -234,7 +234,6 @@ pub async fn run() -> Result<(), RunError> {
 
     let server = axum::serve(listener, app).with_graceful_shutdown(graceful);
 
-
     let graceful_shutdown = async move {
         server.await.map_err(RunError::Serve)?;
         drop(modem_handle);
