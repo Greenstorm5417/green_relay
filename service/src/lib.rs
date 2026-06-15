@@ -226,7 +226,10 @@ async fn reap_queued_messages(db: db::Db, modem: ModemHandle, events: events::Ev
             None => continue,
         };
 
-        let stuck = match db.queued_outbound_messages(&cutoff, QUEUED_REAP_BATCH).await {
+        let stuck = match db
+            .queued_outbound_messages(&cutoff, QUEUED_REAP_BATCH)
+            .await
+        {
             Ok(messages) => messages,
             Err(error) => {
                 tracing::error!(error = %error, "reaper: failed to query queued messages");

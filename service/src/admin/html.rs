@@ -29,10 +29,12 @@ pub(crate) struct CsrfForm {
 }
 
 fn forbidden() -> Response {
-    (StatusCode::FORBIDDEN, Html("<h1>Invalid or missing CSRF token</h1>".to_string()))
+    (
+        StatusCode::FORBIDDEN,
+        Html("<h1>Invalid or missing CSRF token</h1>".to_string()),
+    )
         .into_response()
 }
-
 
 pub(crate) async fn login_form() -> Html<String> {
     Html(render_login(None))
@@ -53,7 +55,8 @@ pub(crate) async fn login_submit(
     {
         Ok(LoginResult::Success { token }) => {
             let mut response = Redirect::to("/admin").into_response();
-            if let Ok(cookie) = HeaderValue::from_str(&session_cookie(&token, state.cookie_secure()))
+            if let Ok(cookie) =
+                HeaderValue::from_str(&session_cookie(&token, state.cookie_secure()))
             {
                 response.headers_mut().insert(header::SET_COOKIE, cookie);
             }

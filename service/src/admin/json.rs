@@ -148,7 +148,8 @@ pub(crate) async fn api_login(
     {
         Ok(LoginResult::Success { token }) => {
             let mut response = StatusCode::OK.into_response();
-            if let Ok(cookie) = HeaderValue::from_str(&session_cookie(&token, state.cookie_secure()))
+            if let Ok(cookie) =
+                HeaderValue::from_str(&session_cookie(&token, state.cookie_secure()))
             {
                 response.headers_mut().insert(header::SET_COOKIE, cookie);
             }
