@@ -61,6 +61,16 @@ pub const ADMIN_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// The duration of an admin lock out.
 pub const ADMIN_LOCK_DURATION: Duration = Duration::from_secs(15 * 60);
 
+/// The maximum number of distinct usernames the login tracker holds at once.
+/// Bounds memory against an attacker spraying many distinct usernames; when the
+/// map is saturated with active entries, a brand-new username's failure is
+/// dropped (a single failure can never lock an account anyway).
+const MAX_TRACKED_USERNAMES: usize = 50_000;
+
+/// The maximum number of recent failure timestamps retained per username, so a
+/// single hammered account cannot grow memory or the lockout scan unbounded.
+const MAX_FAILURES_PER_USERNAME: usize = 32;
+
 /// Checks if the admin login is locked.
 pub fn admin_locked(failures: &[Instant], now: Instant) -> bool {
     let mut sorted: Vec<Instant> = failures.to_vec();
@@ -158,10 +168,33 @@ impl AdminLoginTracker {
 
     /// Records a failed login attempt.
     pub fn record_failure(&mut self, username: &str, now: Instant) {
+        if !self.failures.contains_key(username) && self.failures.len() >= MAX_TRACKED_USERNAMES {
+            self.evict_stale(now);
+            if self.failures.len() >= MAX_TRACKED_USERNAMES {
+                // Saturated with active entries; a brand-new username cannot be
+                // locked on a single failure, so dropping it is safe.
+                return;
+            }
+        }
+
         let history = self.failures.entry(username.to_string()).or_default();
         history.push(now);
         let horizon = ADMIN_FAILURE_WINDOW.saturating_add(ADMIN_LOCK_DURATION);
         history.retain(|t| now.saturating_duration_since(*t) <= horizon);
+
+        let excess = history.len().saturating_sub(MAX_FAILURES_PER_USERNAME);
+        if excess > 0 {
+            history.drain(0..excess);
+        }
+    }
+
+    /// Drops entries whose failures have all aged out, keeping the map bounded.
+    fn evict_stale(&mut self, now: Instant) {
+        let horizon = ADMIN_FAILURE_WINDOW.saturating_add(ADMIN_LOCK_DURATION);
+        self.failures.retain(|_, history| {
+            history.retain(|t| now.saturating_duration_since(*t) <= horizon);
+            !history.is_empty()
+        });
     }
 
     /// Records a successful login, clearing historical failures.

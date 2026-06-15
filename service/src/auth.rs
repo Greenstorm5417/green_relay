@@ -20,6 +20,12 @@ pub const LOCKOUT_WINDOW: Duration = Duration::from_secs(60);
 /// The duration of a lockout.
 pub const LOCKOUT_DURATION: Duration = Duration::from_secs(300);
 
+/// The maximum number of distinct identifiers the tracker holds at once.
+const MAX_TRACKED_IDENTIFIERS: usize = 50_000;
+
+/// The maximum number of recent failure timestamps retained per identifier.
+const MAX_FAILURES_PER_IDENTIFIER: usize = 32;
+
 /// The outcome of an authentication attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthOutcome {
@@ -111,11 +117,37 @@ impl FailureTracker {
 
     /// Records a failed authentication attempt.
     pub fn record_failure(&mut self, identifier: &str, now: Instant) {
+        if !self.failures.contains_key(identifier) && self.failures.len() >= MAX_TRACKED_IDENTIFIERS
+        {
+            self.evict_stale(now);
+            if self.failures.len() >= MAX_TRACKED_IDENTIFIERS {
+                // The map is saturated with still-active entries. A
+                // never-before-seen identifier cannot reach the lockout
+                // threshold on a single failure, so dropping it is safe and
+                // keeps memory bounded.
+                return;
+            }
+        }
+
         let history = self.failures.entry(identifier.to_string()).or_default();
         history.push(now);
 
         let horizon = LOCKOUT_WINDOW.saturating_add(LOCKOUT_DURATION);
         history.retain(|t| now.saturating_duration_since(*t) <= horizon);
+
+        let excess = history.len().saturating_sub(MAX_FAILURES_PER_IDENTIFIER);
+        if excess > 0 {
+            history.drain(0..excess);
+        }
+    }
+
+    /// Drops entries whose failures have all aged out, keeping the map bounded.
+    fn evict_stale(&mut self, now: Instant) {
+        let horizon = LOCKOUT_WINDOW.saturating_add(LOCKOUT_DURATION);
+        self.failures.retain(|_, history| {
+            history.retain(|t| now.saturating_duration_since(*t) <= horizon);
+            !history.is_empty()
+        });
     }
 
     /// Clears the recorded failures for an identifier upon success.
@@ -349,6 +381,26 @@ mod tests {
 
         let after = trigger + Duration::from_secs(301);
         assert!(!tracker.is_locked(&key_identifier("bad"), after));
+    }
+
+    #[test]
+    fn failure_history_is_capped_per_identifier_and_still_locks() {
+        let mut tracker = FailureTracker::new();
+        let id = key_identifier("hammered");
+        let now = Instant::now();
+
+        // Hammer a single identifier far beyond the cap at the same instant.
+        for _ in 0..1000 {
+            tracker.record_failure(&id, now);
+        }
+
+        let history_len = tracker.failures.get(&id).map(Vec::len).unwrap_or(0);
+        assert!(
+            history_len <= MAX_FAILURES_PER_IDENTIFIER,
+            "per-identifier history must stay bounded, got {history_len}"
+        );
+        // The lockout must still trigger despite the bounded history.
+        assert!(tracker.is_locked(&id, now));
     }
 
     #[test]
