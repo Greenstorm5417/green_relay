@@ -48,12 +48,12 @@ pub fn key_identifier(presented_key: &str) -> String {
 
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = Vec::with_capacity(bytes.len().saturating_mul(2));
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for &b in bytes {
-        out.push(*HEX.get((b >> 4) as usize).unwrap_or(&b'0'));
-        out.push(*HEX.get((b & 0x0f) as usize).unwrap_or(&b'0'));
+        out.push(*HEX.get((b >> 4) as usize).unwrap_or(&b'0') as char);
+        out.push(*HEX.get((b & 0x0f) as usize).unwrap_or(&b'0') as char);
     }
-    String::from_utf8(out).unwrap_or_default()
+    out
 }
 
 /// Checks if the presented key length is within allowed limits.

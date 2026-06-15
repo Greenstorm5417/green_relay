@@ -8,8 +8,6 @@ license = "MIT"
 repository = "https://github.com/Greenstorm5417/green_relay"
 readme = "../README.md"
 
-# Debian package metadata, consumed by `cargo deb`. Produces a `.deb` that
-# installs the binary, an example config, and a systemd unit.
 [package.metadata.deb]
 maintainer = "Greenstorm5417 <Greenstorm5417@users.noreply.github.com>"
 copyright = "2025 Greenstorm5417"
@@ -20,32 +18,25 @@ Green Relay is an asynchronous Rust daemon that sends and receives SMS through \
 a Waveshare SIM7600X 4G USB modem over AT commands. It exposes an \
 API-key-authenticated REST API, a real-time Server-Sent Events stream, and an \
 Argon2-secured admin dashboard, persisting state in SQLite."""
-# `$auto` lets cargo-deb compute shared-library dependencies from the binary.
 depends = "$auto"
 assets = [
     ["target/release/green_relay", "usr/bin/green_relay", "755"],
     ["../config.example.yaml", "etc/green_relay/config.example.yaml", "644"],
+    ["../config.default.yaml", "etc/green_relay/config.yaml", "644"],
 ]
-conf-files = ["/etc/green_relay/config.example.yaml"]
+conf-files = [
+    "/etc/green_relay/config.example.yaml",
+    "/etc/green_relay/config.yaml",
+]
 
-# Install and enable the systemd unit from `service/systemd/`.
 [package.metadata.deb.systemd-units]
 unit-scripts = "systemd"
 unit-name = "green_relay"
 enable = true
 start = false
 
-
-# Library target exposes the crate internals so the integration tests under
-# `tests/` and the benches under `benches/` can drive them; the binary is a
-# thin shell over `run()`.
 [features]
-# Default builds ship without the bundled web UI.
 default = []
-# Serve the statically exported Next.js admin UI (built from `web-ui/` with
-# Bun) from the service. The build script produces the static assets in
-# `web-ui/out` that this feature wires into the router. Pulls in `tower-http`
-# for static-file serving.
 web-ui = ["dep:tower-http"]
 
 [lib]
@@ -58,15 +49,11 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
-# `BroadcastStream` adapts the event-bus broadcast receiver into the `Stream`
-# the Axum SSE responder consumes. The `sync` feature gates exactly that
-# wrapper; pinned to the current 0.1 line maintained alongside Tokio.
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 axum = "0.8.9"
 tower = "0.5.3"
-# Static-file serving for the bundled web UI; only compiled with `web-ui`.
-tower-http = { version = "0.6", features = ["fs"], optional = true }
-tokio-serial = "5.4"
+tower-http = { version = "0.7.0", features = ["fs"], optional = true }
+tokio-serial = "5.4.5"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono"] }
 argon2 = "0.5.3"
 # Pinned to password-hash 0.5 to match argon2 0.5.3's own password-hash major:
@@ -77,20 +64,13 @@ password-hash = { version = "0.5", features = ["getrandom"] }
 sha2 = "0.11.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+tracing-appender = "0.2.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-# YAML configuration parsing. serde_yaml is archived but API-frozen and the
-# most widely deployed option; the config file is a trusted local input, so the
-# archival status carries minimal risk. Revisit if a maintained successor
-# stabilizes.
-serde_yaml = "0.9"
+yaml_serde = "0.10.4"
 chrono = { version = "0.4.45", features = ["serde"] }
-# OpenAPI generation. `utoipa` derives schema/path metadata from the public
-# route handlers and models; `utoipa-axum` (0.2 targets axum 0.8) provides the
-# `OpenApiRouter` + `routes!` bindings that keep the routing table and the
-# generated spec in sync.
-utoipa = { version = "5", features = ["axum_extras", "chrono"] }
-utoipa-axum = "0.2"
+utoipa = { version = "5.5.0", features = ["axum_extras", "chrono"] }
+utoipa-axum = "0.2.0"
 
 [dev-dependencies]
 proptest = "1.11.0"
@@ -117,9 +97,6 @@ unsafe_code = "forbid"
 [lints.clippy]
 items_after_statements = "deny"
 
-# Build dependencies at opt-level 3 even in dev/test so the crypto-heavy crates
-# (argon2, sha2) and sqlx do not make the property tests run for minutes, while
-# our own crate stays unoptimized for fast incremental builds.
 [profile.dev.package."*"]
 opt-level = 1
 

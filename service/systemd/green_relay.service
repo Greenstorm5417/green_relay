@@ -17,6 +17,9 @@ RestartSec=5
 # /var/lib/green_relay (resolves the default relative DATABASE_PATH there).
 DynamicUser=yes
 StateDirectory=green_relay
+# Creates /var/log/green_relay (owned by the service user) and grants write
+# access through ProtectSystem=strict for the default LOG_DIR.
+LogsDirectory=green_relay
 WorkingDirectory=/var/lib/green_relay
 # Grant access to the modem's serial device (e.g. /dev/ttyUSB2).
 SupplementaryGroups=dialout

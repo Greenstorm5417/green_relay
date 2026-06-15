@@ -171,7 +171,7 @@ pub async fn run() -> Result<(), RunError> {
     let config = match config::load() {
         Ok(config) => config,
         Err(error) => {
-            let _ = logging::init_subscriber(logging::Severity::Info);
+            let _ = logging::init_subscriber(logging::Severity::Info, None);
             let key = error.key().unwrap_or("<unknown>");
             tracing::error!(
                 config_key = key,
@@ -184,9 +184,19 @@ pub async fn run() -> Result<(), RunError> {
 
     let severity =
         logging::Severity::parse(config.log_level.as_str()).unwrap_or(logging::Severity::Info);
-    if let Err(error) = logging::init_subscriber(severity) {
-        eprintln!("warning: {error}");
-    }
+    let file_log = config.log_dir.as_ref().map(|dir| logging::FileLogConfig {
+        directory: dir.clone(),
+        prefix: config.log_file_prefix.clone(),
+        rotation: config.log_rotation,
+        max_files: config.log_max_files as usize,
+    });
+    let _log_guard = match logging::init_subscriber(severity, file_log.as_ref()) {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("warning: {error}");
+            None
+        }
+    };
 
     let db = db::Db::connect(&config.database_path)
         .await
@@ -224,8 +234,7 @@ pub async fn run() -> Result<(), RunError> {
 
     let server = axum::serve(listener, app).with_graceful_shutdown(graceful);
 
-    // The complete graceful shutdown: drain in-flight HTTP connections, then
-    // wait for the Modem Manager to finish its in-flight AT exchanges and exit.
+
     let graceful_shutdown = async move {
         server.await.map_err(RunError::Serve)?;
         drop(modem_handle);
@@ -233,11 +242,6 @@ pub async fn run() -> Result<(), RunError> {
         Ok::<(), RunError>(())
     };
 
-    // Bound the entire shutdown sequence by the grace period (Req 11.2, 11.3):
-    // if it overruns — e.g. the Modem Manager is stuck in reconnect backoff and
-    // cannot complete in-flight work — force a non-zero exit. Returning drops
-    // the in-flight shutdown future, and the runtime cancels any remaining
-    // tasks as the process exits.
     tokio::select! {
         result = graceful_shutdown => {
             result?;

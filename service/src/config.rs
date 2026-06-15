@@ -29,6 +29,18 @@ pub const KEY_RATE_WINDOW_SECS: &str = "RATE_WINDOW_SECS";
 /// The environment variable or configuration key for the logging level.
 pub const KEY_LOG_LEVEL: &str = "LOG_LEVEL";
 
+/// The environment variable or configuration key for the log file directory.
+pub const KEY_LOG_DIR: &str = "LOG_DIR";
+
+/// The environment variable or configuration key for the log filename prefix.
+pub const KEY_LOG_FILE_PREFIX: &str = "LOG_FILE_PREFIX";
+
+/// The environment variable or configuration key for the log rotation policy.
+pub const KEY_LOG_ROTATION: &str = "LOG_ROTATION";
+
+/// The environment variable or configuration key for the retained log file count.
+pub const KEY_LOG_MAX_FILES: &str = "LOG_MAX_FILES";
+
 /// The environment variable or configuration key for the maximum serial port reopen attempts.
 pub const KEY_REOPEN_MAX_ATTEMPTS: &str = "REOPEN_MAX_ATTEMPTS";
 
@@ -55,6 +67,10 @@ pub const KNOWN_KEYS: &[&str] = &[
     KEY_DEFAULT_RATE_LIMIT,
     KEY_RATE_WINDOW_SECS,
     KEY_LOG_LEVEL,
+    KEY_LOG_DIR,
+    KEY_LOG_FILE_PREFIX,
+    KEY_LOG_ROTATION,
+    KEY_LOG_MAX_FILES,
     KEY_REOPEN_MAX_ATTEMPTS,
     KEY_SEND_MAX_ATTEMPTS,
     KEY_SEND_RETRY_DELAY_SECS,
@@ -135,6 +151,18 @@ pub struct Config {
     /// The configured logging level.
     pub log_level: LogLevel,
 
+    /// Directory for rotating on-disk logs; `None` disables file logging.
+    pub log_dir: Option<String>,
+
+    /// Filename prefix for on-disk log files.
+    pub log_file_prefix: String,
+
+    /// How often the on-disk log file rotates.
+    pub log_rotation: crate::logging::LogRotation,
+
+    /// Maximum number of rotated log files to retain.
+    pub log_max_files: u32,
+
     /// The maximum attempts to reopen a closed serial port.
     pub reopen_max_attempts: u32,
 
@@ -161,14 +189,14 @@ pub fn merge_env_over_file(
 
 /// Parses the contents of a YAML configuration file.
 pub fn parse_config_file(contents: &str) -> Result<HashMap<String, String>, String> {
-    let value: serde_yaml::Value = serde_yaml::from_str(contents).map_err(|e| e.to_string())?;
+    let value: yaml_serde::Value = yaml_serde::from_str(contents).map_err(|e| e.to_string())?;
 
     let mut map = HashMap::new();
     match value {
-        serde_yaml::Value::Null => Ok(map),
-        serde_yaml::Value::Mapping(mapping) => {
+        yaml_serde::Value::Null => Ok(map),
+        yaml_serde::Value::Mapping(mapping) => {
             for (key, val) in mapping {
-                let serde_yaml::Value::String(key) = key else {
+                let yaml_serde::Value::String(key) = key else {
                     return Err(format!("configuration keys must be strings, found {key:?}"));
                 };
                 match scalar_to_string(&val) {
@@ -190,11 +218,11 @@ pub fn parse_config_file(contents: &str) -> Result<HashMap<String, String>, Stri
     }
 }
 
-fn scalar_to_string(value: &serde_yaml::Value) -> Option<String> {
+fn scalar_to_string(value: &yaml_serde::Value) -> Option<String> {
     match value {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        yaml_serde::Value::String(s) => Some(s.clone()),
+        yaml_serde::Value::Bool(b) => Some(b.to_string()),
+        yaml_serde::Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
 }
@@ -258,6 +286,24 @@ impl Config {
             })?,
         };
 
+        let log_dir = optional_string(map, KEY_LOG_DIR);
+
+        let log_file_prefix =
+            optional_string(map, KEY_LOG_FILE_PREFIX).unwrap_or_else(|| "green_relay".to_string());
+
+        let log_rotation = match optional_string(map, KEY_LOG_ROTATION) {
+            None => crate::logging::LogRotation::default(),
+            Some(raw) => crate::logging::LogRotation::parse(&raw).ok_or_else(|| {
+                ConfigError::InvalidValue {
+                    key: KEY_LOG_ROTATION.to_string(),
+                    value: raw,
+                    reason: "must be one of MINUTELY, HOURLY, DAILY, NEVER".to_string(),
+                }
+            })?,
+        };
+
+        let log_max_files = parse_u32_or_default(map, KEY_LOG_MAX_FILES, 7)?;
+
         let reopen_max_attempts = parse_u32_or_default(map, KEY_REOPEN_MAX_ATTEMPTS, 10)?;
         if reopen_max_attempts == 0 {
             return Err(out_of_range(
@@ -288,6 +334,10 @@ impl Config {
             default_rate_limit,
             rate_window_secs,
             log_level,
+            log_dir,
+            log_file_prefix,
+            log_rotation,
+            log_max_files,
             reopen_max_attempts,
             send_max_attempts,
             send_retry_delay_secs,

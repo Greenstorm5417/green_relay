@@ -1,0 +1,30 @@
+# Default Green Relay configuration installed at /etc/green_relay/config.yaml.
+#
+# The systemd unit points SMS_CONFIG_FILE here, so these values are what the
+# service uses out of the box. Edit them to match your deployment (at minimum
+# review SERIAL_PORT for your modem), then restart: systemctl restart green_relay.
+#
+# Every value can also be overridden by an environment variable of the same
+# name; environment values win over this file.
+
+# Address the HTTP API + admin portal binds to (host:port).
+LISTEN_ADDR: "0.0.0.0:8080"
+
+# SQLite database file. Lives under the systemd StateDirectory by default.
+DATABASE_PATH: "/var/lib/green_relay/sms.db"
+
+# Serial device for the GSM modem.
+SERIAL_PORT: "/dev/ttyUSB2"
+
+# Minimum log level: TRACE, DEBUG, INFO, WARN, or ERROR.
+LOG_LEVEL: "INFO"
+
+# Directory for rotating on-disk log files. Comment out to log only to stdout
+# (captured by journald under systemd).
+LOG_DIR: "/var/log/green_relay"
+
+# Log rotation policy: MINUTELY, HOURLY, DAILY, or NEVER.
+LOG_ROTATION: "DAILY"
+
+# Number of rotated log files to retain. 0 keeps every file.
+LOG_MAX_FILES: 7

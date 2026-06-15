@@ -19,6 +19,7 @@ use green_relay::auth::{
     build_audit_record_with_identifier, key_identifier,
 };
 use green_relay::health::{ModemStatusSnapshot, SimStatus, derive_health};
+use green_relay::logging::{LogRecord, request_log};
 use green_relay::modem::parse_send_outcome;
 use green_relay::ratelimit::RateLimiter;
 use green_relay::sms::{segment_message, validate_body, validate_e164};
@@ -138,6 +139,31 @@ fn bench_derive_health(c: &mut Criterion) {
     });
 }
 
+fn bench_log_now_timestamp(c: &mut Criterion) {
+    c.bench_function("log_now_timestamp", |b| {
+        b.iter(|| black_box(LogRecord::now_timestamp()))
+    });
+}
+
+fn bench_log_build_request(c: &mut Criterion) {
+    c.bench_function("log_build_request", |b| {
+        b.iter(|| {
+            black_box(request_log(
+                black_box("POST"),
+                black_box("/api/v1/messages"),
+                black_box(202),
+            ))
+        })
+    });
+}
+
+fn bench_log_to_json_string(c: &mut Criterion) {
+    let record = request_log("POST", "/api/v1/messages", 202);
+    c.bench_function("log_to_json_string", |b| {
+        b.iter(|| black_box(record.to_json_string()))
+    });
+}
+
 criterion_group!(
     hotpath,
     bench_key_identifier,
@@ -148,5 +174,8 @@ criterion_group!(
     bench_segment_multi,
     bench_parse_send_outcome,
     bench_derive_health,
+    bench_log_now_timestamp,
+    bench_log_build_request,
+    bench_log_to_json_string,
 );
 criterion_main!(hotpath);

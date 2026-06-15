@@ -39,6 +39,21 @@ DATABASE_PATH: "./sms.db"
 # Minimum log level: TRACE, DEBUG, INFO, WARN, or ERROR.
 #LOG_LEVEL: "INFO"
 
+# Directory for rotating on-disk log files. Leave unset to log only to stdout.
+# When set, JSON logs are written to both stdout and a rotating file in this
+# directory (created if needed).
+#LOG_DIR: "/var/log/green_relay"
+
+# Filename prefix for on-disk log files (the rotation date and a `.log` suffix
+# are appended automatically).
+#LOG_FILE_PREFIX: "green_relay"
+
+# Log rotation policy: MINUTELY, HOURLY, DAILY, or NEVER.
+#LOG_ROTATION: "DAILY"
+
+# Number of rotated log files to retain. 0 keeps every file.
+#LOG_MAX_FILES: 7
+
 # Max serial-port reopen attempts before the modem manager gives up (>= 1).
 #REOPEN_MAX_ATTEMPTS: 10
 

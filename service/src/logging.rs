@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::Utc;
+use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 
 const CREDENTIAL_FIELDS: &[&str] = &[
@@ -87,6 +88,24 @@ pub struct LogRecord {
     fields: BTreeMap<String, Value>,
 }
 
+/// A borrowed log field value, serialized without cloning the source data.
+enum FieldRef<'a> {
+    Text(&'a str),
+    Json(&'a Value),
+}
+
+impl Serialize for FieldRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            FieldRef::Text(text) => serializer.serialize_str(text),
+            FieldRef::Json(value) => value.serialize(serializer),
+        }
+    }
+}
+
 impl LogRecord {
     /// Creates a new log record with the current timestamp.
     pub fn new(severity: Severity, message: impl Into<String>) -> Self {
@@ -109,7 +128,7 @@ impl LogRecord {
 
     /// Returns the current UTC timestamp formatted as a string.
     pub fn now_timestamp() -> String {
-        Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+        Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     }
 
     /// Adds a custom key-value field to the log record.
@@ -166,7 +185,14 @@ impl LogRecord {
 
     /// Converts the log record to a JSON string.
     pub fn to_json_string(&self) -> String {
-        self.to_json_value().to_string()
+        let mut ordered: BTreeMap<&str, FieldRef<'_>> = BTreeMap::new();
+        ordered.insert("timestamp", FieldRef::Text(&self.timestamp));
+        ordered.insert("severity", FieldRef::Text(self.severity.as_str()));
+        ordered.insert("message", FieldRef::Text(&self.message));
+        for (key, value) in &self.fields {
+            ordered.insert(key.as_str(), FieldRef::Json(value));
+        }
+        serde_json::to_string(&ordered).unwrap_or_default()
     }
 }
 
@@ -209,17 +235,130 @@ pub fn is_credential_field(name: &str) -> bool {
 
 pub use crate::error::SubscriberInitError;
 
-/// Initializes the global tracing subscriber with a minimum severity level.
-pub fn init_subscriber(min_severity: Severity) -> Result<(), SubscriberInitError> {
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{Builder, RollingFileAppender, Rotation};
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+/// How often the on-disk log file is rotated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogRotation {
+    /// Roll over every minute.
+    Minutely,
+    /// Roll over every hour.
+    Hourly,
+    /// Roll over every day.
+    #[default]
+    Daily,
+    /// Never roll over; write to a single file.
+    Never,
+}
+
+impl LogRotation {
+    /// Parses a rotation policy from a string.
+    pub fn parse(s: &str) -> Option<LogRotation> {
+        match s.trim().to_ascii_uppercase().as_str() {
+            "MINUTELY" => Some(LogRotation::Minutely),
+            "HOURLY" => Some(LogRotation::Hourly),
+            "DAILY" => Some(LogRotation::Daily),
+            "NEVER" => Some(LogRotation::Never),
+            _ => None,
+        }
+    }
+
+    /// Returns the canonical string representation of the rotation policy.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogRotation::Minutely => "MINUTELY",
+            LogRotation::Hourly => "HOURLY",
+            LogRotation::Daily => "DAILY",
+            LogRotation::Never => "NEVER",
+        }
+    }
+
+    fn to_appender(self) -> Rotation {
+        match self {
+            LogRotation::Minutely => Rotation::MINUTELY,
+            LogRotation::Hourly => Rotation::HOURLY,
+            LogRotation::Daily => Rotation::DAILY,
+            LogRotation::Never => Rotation::NEVER,
+        }
+    }
+}
+
+/// Settings for writing rotating logs to disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileLogConfig {
+    /// Directory the log files are written to.
+    pub directory: String,
+    /// Filename prefix for each log file.
+    pub prefix: String,
+    /// How often the log file rotates.
+    pub rotation: LogRotation,
+    /// Maximum number of rotated files to keep; 0 keeps all of them.
+    pub max_files: usize,
+}
+
+fn build_file_appender(cfg: &FileLogConfig) -> Result<RollingFileAppender, SubscriberInitError> {
+    let mut builder = Builder::new()
+        .rotation(cfg.rotation.to_appender())
+        .filename_prefix(cfg.prefix.clone())
+        .filename_suffix("log");
+    if cfg.max_files > 0 {
+        builder = builder.max_log_files(cfg.max_files);
+    }
+    builder
+        .build(&cfg.directory)
+        .map_err(|e| SubscriberInitError(e.to_string()))
+}
+
+/// Initializes the global tracing subscriber.
+///
+/// Logs are always written as JSON to stdout. When `file` is provided, the same
+/// records are also written to a rotating on-disk log through a non-blocking
+/// writer; the returned [`WorkerGuard`] must be held for the lifetime of the
+/// process so the background flushing thread is not dropped early.
+pub fn init_subscriber(
+    min_severity: Severity,
+    file: Option<&FileLogConfig>,
+) -> Result<Option<WorkerGuard>, SubscriberInitError> {
     let max_level: tracing::Level = min_severity.into();
-    tracing_subscriber::fmt()
+    let filter = LevelFilter::from_level(max_level);
+
+    let stdout_layer = tracing_subscriber::fmt::layer()
         .json()
-        .with_writer(std::io::stdout)
-        .with_max_level(max_level)
         .with_current_span(false)
         .with_span_list(false)
-        .try_init()
-        .map_err(|e| SubscriberInitError(e.to_string()))
+        .with_writer(std::io::stdout);
+
+    match file {
+        None => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(stdout_layer)
+                .try_init()
+                .map_err(|e| SubscriberInitError(e.to_string()))?;
+            Ok(None)
+        }
+        Some(cfg) => {
+            let appender = build_file_appender(cfg)?;
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            let file_layer = tracing_subscriber::fmt::layer()
+                .json()
+                .with_ansi(false)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(writer);
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(stdout_layer)
+                .with(file_layer)
+                .try_init()
+                .map_err(|e| SubscriberInitError(e.to_string()))?;
+            Ok(Some(guard))
+        }
+    }
 }
 
 #[cfg(test)]

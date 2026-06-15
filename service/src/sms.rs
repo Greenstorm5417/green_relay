@@ -174,26 +174,28 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
             .unwrap_or(0)
             .saturating_add(1),
     );
-    let mut current = String::new();
+    let mut seg_start = 0usize;
     let mut current_len = 0usize;
 
-    for c in body.chars() {
+    for (idx, c) in body.char_indices() {
         let clen = gsm7_char_len(c);
         if current_len.saturating_add(clen) > MULTI_PART_MAX {
             let seq = segments.len().saturating_add(1) as u8;
             segments.push(Segment {
                 seq,
-                text: std::mem::take(&mut current),
+                text: body.get(seg_start..idx).unwrap_or_default().to_string(),
             });
+            seg_start = idx;
             current_len = 0;
         }
-        current.push(c);
         current_len = current_len.saturating_add(clen);
     }
-    if !current.is_empty() {
-        let seq = segments.len().saturating_add(1) as u8;
-        segments.push(Segment { seq, text: current });
-    }
+
+    let seq = segments.len().saturating_add(1) as u8;
+    segments.push(Segment {
+        seq,
+        text: body.get(seg_start..).unwrap_or_default().to_string(),
+    });
 
     if segments.len() > MAX_PARTS {
         return Err(SegmentError::TooManyParts {

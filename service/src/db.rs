@@ -35,6 +35,31 @@ pub struct Db {
     schema_ready: Arc<AtomicBool>,
 }
 
+/// A raw API-key row for the admin listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiKeyRecord {
+    pub id: i64,
+    pub key_identifier: String,
+    pub custom_rate_limit: Option<u32>,
+    pub revoked: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A recent outbound-message row for the admin activity feed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundActivityRow {
+    pub created_at: DateTime<Utc>,
+    pub status: String,
+    pub to_number: String,
+}
+
+/// A recent inbound-message row for the admin activity feed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundActivityRow {
+    pub received_at: DateTime<Utc>,
+    pub from_number: String,
+}
+
 impl Db {
     /// Connects to the SQLite database at the specified path.
     pub async fn connect(database_path: &str) -> Result<Db, DbError> {
@@ -42,7 +67,7 @@ impl Db {
             .filename(database_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Full)
+            .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5))
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
@@ -165,9 +190,7 @@ impl Db {
         let now = Utc::now();
         let now_text = now.to_rfc3339();
 
-        let mut tx = self.pool.begin().await?;
-
-        let insert = sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO outbound_messages \
                  (to_number, body, status, part_count, msg_reference, error_code, created_at, updated_at) \
              VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)",
@@ -178,29 +201,19 @@ impl Db {
         .bind(part_count as i64)
         .bind(&now_text)
         .bind(&now_text)
-        .execute(&mut *tx)
-        .await;
-
-        let id = match insert {
-            Ok(result) => result.last_insert_rowid(),
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(DbError::Sqlx(e));
-            }
-        };
-
-        tx.commit().await?;
+        .execute(self.pool())
+        .await?;
 
         Ok(OutboundMessage {
-            id,
+            id: result.last_insert_rowid(),
             to_number: to_number.to_string(),
             body: body.to_string(),
             status,
             part_count,
             msg_reference: None,
             error_code: None,
-            created_at: parse_ts(&now_text)?,
-            updated_at: parse_ts(&now_text)?,
+            created_at: now,
+            updated_at: now,
         })
     }
 
@@ -263,6 +276,42 @@ impl Db {
         Ok(message)
     }
 
+    /// Updates an outbound message's status fields without reading the row back.
+    ///
+    /// A lighter-weight alternative to [`Db::update_outbound_message`] for the
+    /// background dispatch path, which discards the returned record. Runs a
+    /// single autocommit `UPDATE` rather than an `UPDATE` plus a `SELECT`
+    /// read-back wrapped in a transaction.
+    pub async fn set_outbound_status(
+        &self,
+        id: i64,
+        status: MessageStatus,
+        msg_reference: Option<&str>,
+        error_code: Option<&str>,
+    ) -> Result<(), DbError> {
+        self.ensure_ready()?;
+
+        let now_text = Utc::now().to_rfc3339();
+
+        let result = sqlx::query(
+            "UPDATE outbound_messages \
+                SET status = ?, msg_reference = ?, error_code = ?, updated_at = ? \
+              WHERE id = ?",
+        )
+        .bind(status.as_db_str())
+        .bind(msg_reference)
+        .bind(error_code)
+        .bind(&now_text)
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::Sqlx(sqlx::Error::RowNotFound));
+        }
+        Ok(())
+    }
+
     /// Fetches a single outbound message record by its ID.
     pub async fn get_outbound_message(&self, id: i64) -> Result<Option<OutboundMessage>, DbError> {
         let row = sqlx::query(
@@ -279,6 +328,191 @@ impl Db {
         }
     }
 
+    /// Looks up an active (non-revoked) API key by its identifier.
+    ///
+    /// Returns the key's row id and its optional custom rate limit. A stored
+    /// custom limit that does not fit in a `u32` is treated as absent so the
+    /// caller falls back to the default limit.
+    pub async fn lookup_active_key(
+        &self,
+        identifier: &str,
+    ) -> Result<Option<(i64, Option<u32>)>, DbError> {
+        let row = sqlx::query(
+            "SELECT id, custom_rate_limit FROM api_keys \
+               WHERE key_identifier = ? AND revoked = 0",
+        )
+        .bind(identifier)
+        .fetch_optional(self.pool())
+        .await?;
+
+        match row {
+            Some(row) => {
+                let id: i64 = row.try_get("id")?;
+                let custom: Option<i64> = row.try_get("custom_rate_limit")?;
+                Ok(Some((id, custom.and_then(|c| u32::try_from(c).ok()))))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Inserts an audit-log record. Centralizes the audit `INSERT` used by the
+    /// admin and modem layers.
+    pub async fn insert_audit(
+        &self,
+        event_type: &str,
+        key_identifier: Option<&str>,
+        detail: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO audit_log (event_type, key_identifier, detail, created_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(event_type)
+        .bind(key_identifier)
+        .bind(detail)
+        .bind(at.to_rfc3339())
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Looks up an admin user's id and stored password hash by username.
+    pub async fn find_admin_credentials(
+        &self,
+        username: &str,
+    ) -> Result<Option<(i64, String)>, DbError> {
+        let row = sqlx::query("SELECT id, password_hash FROM admin_users WHERE username = ?")
+            .bind(username)
+            .fetch_optional(self.pool())
+            .await?;
+        match row {
+            Some(row) => {
+                let id: i64 = row.try_get("id")?;
+                let hash: String = row.try_get("password_hash")?;
+                Ok(Some((id, hash)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Inserts a new (non-revoked) API key, returning its row id.
+    pub async fn insert_api_key(&self, identifier: &str, created_at: &str) -> Result<i64, DbError> {
+        let result = sqlx::query(
+            "INSERT INTO api_keys (key_hash, key_identifier, custom_rate_limit, revoked, created_at) \
+             VALUES (?, ?, NULL, 0, ?)",
+        )
+        .bind(identifier)
+        .bind(identifier)
+        .bind(created_at)
+        .execute(self.pool())
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Lists all API keys, newest first.
+    pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, DbError> {
+        let rows = sqlx::query(
+            "SELECT id, key_identifier, custom_rate_limit, revoked, created_at \
+             FROM api_keys ORDER BY created_at DESC, id DESC",
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut keys = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let created_at: String = row.try_get("created_at")?;
+            let custom: Option<i64> = row.try_get("custom_rate_limit")?;
+            let revoked: i64 = row.try_get("revoked")?;
+            keys.push(ApiKeyRecord {
+                id: row.try_get("id")?,
+                key_identifier: row.try_get("key_identifier")?,
+                custom_rate_limit: custom.and_then(|v| u32::try_from(v).ok()),
+                revoked: revoked != 0,
+                created_at: DateTime::parse_from_rfc3339(&created_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            });
+        }
+        Ok(keys)
+    }
+
+    /// Returns the public identifier of an API key by row id, if it exists.
+    pub async fn api_key_identifier(&self, id: i64) -> Result<Option<String>, DbError> {
+        let row = sqlx::query("SELECT key_identifier FROM api_keys WHERE id = ?")
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
+        match row {
+            Some(row) => Ok(Some(row.try_get("key_identifier")?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Marks an API key revoked, returning the number of rows affected.
+    pub async fn set_api_key_revoked(&self, id: i64) -> Result<u64, DbError> {
+        let result = sqlx::query("UPDATE api_keys SET revoked = 1 WHERE id = ?")
+            .bind(id)
+            .execute(self.pool())
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Returns recent outbound messages (since `cutoff`, RFC3339) for the
+    /// admin activity feed, newest first, capped at 50.
+    pub async fn recent_outbound_activity(
+        &self,
+        cutoff: &str,
+    ) -> Result<Vec<OutboundActivityRow>, DbError> {
+        let rows = sqlx::query(
+            "SELECT created_at, status, to_number FROM outbound_messages \
+             WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50",
+        )
+        .bind(cutoff)
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut out = Vec::new();
+        for row in &rows {
+            let created_at: String = row.try_get("created_at")?;
+            if let Ok(ts) = DateTime::parse_from_rfc3339(&created_at) {
+                out.push(OutboundActivityRow {
+                    created_at: ts.with_timezone(&Utc),
+                    status: row.try_get("status")?,
+                    to_number: row.try_get("to_number")?,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns recent inbound messages (since `cutoff`, RFC3339) for the admin
+    /// activity feed, newest first, capped at 50.
+    pub async fn recent_inbound_activity(
+        &self,
+        cutoff: &str,
+    ) -> Result<Vec<InboundActivityRow>, DbError> {
+        let rows = sqlx::query(
+            "SELECT received_at, from_number FROM inbound_messages \
+             WHERE received_at >= ? ORDER BY received_at DESC LIMIT 50",
+        )
+        .bind(cutoff)
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut out = Vec::new();
+        for row in &rows {
+            let received_at: String = row.try_get("received_at")?;
+            if let Ok(ts) = DateTime::parse_from_rfc3339(&received_at) {
+                out.push(InboundActivityRow {
+                    received_at: ts.with_timezone(&Utc),
+                    from_number: row.try_get("from_number")?,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// Inserts a new inbound message record into the database.
     pub async fn create_inbound_message(
         &self,
@@ -290,32 +524,20 @@ impl Db {
 
         let received_text = received_at.to_rfc3339();
 
-        let mut tx = self.pool.begin().await?;
-
-        let insert = sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO inbound_messages (from_number, body, received_at) VALUES (?, ?, ?)",
         )
         .bind(from_number)
         .bind(body)
         .bind(&received_text)
-        .execute(&mut *tx)
-        .await;
-
-        let id = match insert {
-            Ok(result) => result.last_insert_rowid(),
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(DbError::Sqlx(e));
-            }
-        };
-
-        tx.commit().await?;
+        .execute(self.pool())
+        .await?;
 
         Ok(InboundMessage {
-            id,
+            id: result.last_insert_rowid(),
             from_number: from_number.to_string(),
             body: body.to_string(),
-            received_at: parse_ts(&received_text)?,
+            received_at,
         })
     }
 
