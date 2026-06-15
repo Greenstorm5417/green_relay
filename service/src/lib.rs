@@ -30,6 +30,8 @@ pub mod events;
 pub mod health;
 /// Logging module.
 pub mod logging;
+/// Metrics module.
+pub mod metrics;
 /// Models module.
 pub mod models;
 /// Modem module.

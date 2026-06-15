@@ -64,3 +64,43 @@ jobs:
         run: cargo clippy --all-targets
       - name: Test
         run: cargo test --all-targets
+
+  # Supply-chain gate: security advisories, yanked crates, licenses, sources.
+  supply-chain:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo-deny
+        run: cargo deny check
+
+  # Line coverage report, uploaded as a build artifact (lcov.info).
+  coverage:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install --assume-yes libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: service
+      - name: Generate coverage
+        run: cargo llvm-cov --all-targets --lcov --output-path lcov.info
+      - name: Coverage summary
+        run: cargo llvm-cov report
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: service/lcov.info
+          if-no-files-found: error

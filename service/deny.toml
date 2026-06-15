@@ -1,0 +1,42 @@
+# cargo-deny configuration: supply-chain gate run in CI.
+#
+# Enforced checks: known security advisories (vulnerabilities), yanked crates,
+# license compliance, and that all dependencies come from crates.io. Run
+# locally with `cargo deny check` (install via `cargo install cargo-deny`).
+
+[advisories]
+version = 2
+# Fail on yanked crates. Vulnerabilities fail by default. Unmaintained/notice
+# advisories surface as warnings only (e.g. serde_yaml is archived but
+# API-frozen and parses only trusted local config), so they do not break CI.
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses used across the dependency tree. Add a license here if a
+# new dependency introduces one that is not yet listed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Duplicate versions are common and transitive; surface them without failing.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+# Only crates.io is trusted; reject unknown registries or git sources.
+unknown-registry = "deny"
+unknown-git = "deny"

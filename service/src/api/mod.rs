@@ -37,6 +37,7 @@ use crate::auth::{
 use crate::db::Db;
 use crate::events::EventBus;
 use crate::health::{DEFAULT_RETRY_AFTER_SECS, ModemStatusSnapshot};
+use crate::metrics::Metrics;
 use crate::modem::{ModemHandle, SendResult};
 use crate::ratelimit::{RateDecision, RateLimiter, effective_limit};
 
@@ -115,6 +116,8 @@ pub struct ApiState {
     pub rate_window: Duration,
     /// Real-time event broadcast bus.
     pub events: EventBus,
+    /// Process-wide service metrics.
+    pub metrics: Arc<Metrics>,
 }
 
 impl ApiState {
@@ -129,6 +132,7 @@ impl ApiState {
             default_rate_limit: DEFAULT_RATE_LIMIT,
             rate_window: Duration::from_secs(DEFAULT_RATE_WINDOW_SECS),
             events: EventBus::default(),
+            metrics: Arc::new(Metrics::new()),
         }
     }
 
@@ -257,7 +261,23 @@ pub fn router(state: ApiState) -> Router {
                 async move { Json(api) }
             }),
         )
+        .route(METRICS_PATH, get(metrics_handler))
         .with_state(state)
+}
+
+/// Path at which Prometheus metrics are exposed (unauthenticated).
+pub const METRICS_PATH: &str = "/metrics";
+
+/// Renders process counters and current modem gauges in Prometheus text format.
+async fn metrics_handler(State(state): State<ApiState>) -> Response {
+    let snapshot = state.modem.status_snapshot();
+    let body = state.metrics.render(&snapshot);
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    response
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +333,7 @@ async fn auth_middleware(
     let presented = extract_api_key(request.headers()).unwrap_or_default();
 
     if !passes_guard(&presented) {
+        state.metrics.record_auth_failure();
         emit_auth_audit(
             &key_identifier(&presented),
             &AuthOutcome::Unauthorized,
@@ -329,6 +350,7 @@ async fn auth_middleware(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if tracker.is_locked(&identifier, now) {
+            state.metrics.record_auth_failure();
             emit_auth_audit(&identifier, &AuthOutcome::LockedOut, timestamp);
             return unauthorized_response();
         }
@@ -367,7 +389,10 @@ async fn auth_middleware(
             });
             next.run(request).await
         }
-        AuthOutcome::Unauthorized | AuthOutcome::LockedOut => unauthorized_response(),
+        AuthOutcome::Unauthorized | AuthOutcome::LockedOut => {
+            state.metrics.record_auth_failure();
+            unauthorized_response()
+        }
     }
 }
 
@@ -400,11 +425,14 @@ async fn rate_limit_middleware(
 
     match decision {
         RateDecision::Allow { .. } => next.run(request).await,
-        RateDecision::Reject { retry_after_secs } => json_with_retry_after(
-            StatusCode::TOO_MANY_REQUESTS,
-            retry_after_secs,
-            ApiError::new("rate limit exceeded", Vec::new()),
-        ),
+        RateDecision::Reject { retry_after_secs } => {
+            state.metrics.record_rate_limited();
+            json_with_retry_after(
+                StatusCode::TOO_MANY_REQUESTS,
+                retry_after_secs,
+                ApiError::new("rate limit exceeded", Vec::new()),
+            )
+        }
     }
 }
 
@@ -701,5 +729,30 @@ mod tests {
 
         headers.insert("x-api-key", "xyz789".parse().unwrap());
         assert_eq!(extract_api_key(&headers), Some("xyz789".to_string()));
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_is_unauthenticated_and_counts_auth_failures() {
+        let db = ready_db().await;
+        let app = router(test_state(db));
+
+        // An unauthenticated protected request bumps the auth-failure counter.
+        let rejected = app
+            .clone()
+            .oneshot(get_request("/api/v1/messages/inbound", None))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+        let resp = app.oneshot(get_request("/metrics", None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("green_relay_auth_failures_total 1"));
+        assert!(text.contains("# TYPE green_relay_messages_sent_total counter"));
+        assert!(text.contains("green_relay_modem_serial_connected"));
     }
 }

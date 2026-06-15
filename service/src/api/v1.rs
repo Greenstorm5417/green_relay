@@ -29,6 +29,7 @@ use crate::health::{
     DeliverabilityOutcome, ModemStatusSnapshot, ServiceHealth, SimStatus, deliverability_gate,
     derive_health,
 };
+use crate::metrics::Metrics;
 use crate::models::{InboundMessage, MessageStatus, OutboundMessage};
 use crate::sms::{
     SegmentError, ValidationError, check_required_fields, segment_message, validate_body,
@@ -316,6 +317,8 @@ async fn prepare_send(
         Err(_) => return Err(SendDecision::ServerError),
     };
 
+    state.metrics.record_message_accepted();
+
     Ok(PreparedSend {
         id: record.id,
         to: to.to_string(),
@@ -338,8 +341,9 @@ async fn queue_send(state: &ApiState, request: &SendRequest) -> SendDecision {
     let db = state.db.clone();
     let modem = state.modem.clone();
     let events = state.events.clone();
+    let metrics = state.metrics.clone();
     tokio::spawn(async move {
-        dispatch_send(&db, &modem, &events, id, to, body, None).await;
+        dispatch_send(&db, &modem, &events, &metrics, id, to, body, None).await;
     });
 
     SendDecision::Accepted(SendResponse {
@@ -364,8 +368,9 @@ async fn sync_send(state: &ApiState, request: &SendRequest) -> Response {
     let db = state.db.clone();
     let modem = state.modem.clone();
     let events = state.events.clone();
+    let metrics = state.metrics.clone();
     tokio::spawn(async move {
-        dispatch_send(&db, &modem, &events, id, to, body, Some(reply)).await;
+        dispatch_send(&db, &modem, &events, &metrics, id, to, body, Some(reply)).await;
     });
 
     let wait = Duration::from_secs(SYNC_SEND_WAIT_SECS);
@@ -392,10 +397,12 @@ async fn sync_send(state: &ApiState, request: &SendRequest) -> Response {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_send(
     db: &Db,
     modem: &SharedModem,
     events: &EventBus,
+    metrics: &Metrics,
     id: i64,
     to: String,
     body: String,
@@ -408,6 +415,7 @@ async fn dispatch_send(
             let _ = db
                 .set_outbound_status(id, MessageStatus::Sent, reference.as_deref(), None)
                 .await;
+            metrics.record_message_sent();
             DispatchOutcome {
                 status: MessageStatus::Sent,
                 reference,
@@ -421,6 +429,7 @@ async fn dispatch_send(
             let _ = db
                 .set_outbound_status(id, MessageStatus::Failed, None, detail.as_deref())
                 .await;
+            metrics.record_message_failed();
             DispatchOutcome {
                 status: MessageStatus::Failed,
                 reference: None,
@@ -796,11 +805,13 @@ mod tests {
         };
 
         let events = EventBus::default();
+        let metrics = Metrics::new();
         let modem: SharedModem = Arc::new(modem);
         dispatch_send(
             &db,
             &modem,
             &events,
+            &metrics,
             created.id,
             "+14155552671".into(),
             "hi".into(),
@@ -831,11 +842,13 @@ mod tests {
         };
 
         let events = EventBus::default();
+        let metrics = Metrics::new();
         let modem: SharedModem = Arc::new(modem);
         dispatch_send(
             &db,
             &modem,
             &events,
+            &metrics,
             created.id,
             "+14155552671".into(),
             "hi".into(),
@@ -861,11 +874,13 @@ mod tests {
         };
 
         let events = EventBus::default();
+        let metrics = Metrics::new();
         let modem: SharedModem = Arc::new(modem);
         dispatch_send(
             &db,
             &modem,
             &events,
+            &metrics,
             created.id,
             "+14155552671".into(),
             "hi".into(),
