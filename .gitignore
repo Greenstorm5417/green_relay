@@ -54,3 +54,11 @@ web-ui/.vercel
 # typescript
 web-ui/*.tsbuildinfo
 web-ui/next-env.d.ts
+
+
+python-client/.pytest_cache
+python-client/.venv
+python-client/.ruff_cache
+python-client/dist
+python-client/uv.lock
+__pycache__

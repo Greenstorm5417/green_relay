@@ -1,0 +1,67 @@
+name: Publish Python Client
+
+# Builds the Green Relay Python client and publishes it to PyPI. Triggered by a
+# python-client version tag (e.g. python-v0.1.0) so it stays independent of the
+# Rust service release tags (v*). Publishing uses PyPI Trusted Publishing
+# (OIDC), so no API token is stored in the repository.
+on:
+  push:
+    tags: ["python-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: python-client
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Verify the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/python-v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#python-v}"
+          pkg_version="$(uv version --short)"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "Tag version ($tag_version) does not match pyproject version ($pkg_version)" >&2
+            exit 1
+          fi
+      - name: Run checks
+        run: |
+          uv sync --all-groups
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest
+      - name: Build sdist and wheel
+        run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-client-dist
+          path: python-client/dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted Publishing requires the id-token permission and a configured
+    # environment on the PyPI project side.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/green-relay/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-client-dist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
