@@ -78,7 +78,10 @@ impl Db {
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5))
             .foreign_keys(true);
-        let pool = SqlitePoolOptions::new().connect_with(options).await?;
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .connect_with(options)
+            .await?;
         Ok(Db {
             pool,
             schema_ready: Arc::new(AtomicBool::new(false)),

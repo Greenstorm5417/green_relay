@@ -206,15 +206,14 @@ pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
     Ok(segments)
 }
 
+/// Builds an `AT+CMGS` payload, stripping the `0x1A` terminator from the body
+/// so only the appended terminator ends the message (Req 1.3).
 pub fn build_cmgs(to: &str, part: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(to.len().saturating_add(part.len()).saturating_add(12));
     payload.extend_from_slice(b"AT+CMGS=\"");
     payload.extend(to.bytes().filter(|b| b.is_ascii_digit() || *b == b'+'));
     payload.extend_from_slice(b"\"\r");
-    payload.extend(
-        part.bytes()
-            .filter(|b| *b != 0x1A && *b != b'\r' && *b != b'\n'),
-    );
+    payload.extend(part.bytes().filter(|b| *b != 0x1A));
     payload.push(0x1A);
     payload
 }
@@ -322,28 +321,25 @@ mod segment_tests {
     }
 
     #[test]
-    fn build_cmgs_strips_terminator_and_line_breaks_from_body() {
+    fn build_cmgs_strips_terminator_but_keeps_line_breaks() {
         let payload = build_cmgs("+14155552671", "evil\x1abody\r\nmore");
 
         let terminator_count = payload.iter().filter(|b| **b == 0x1A).count();
         assert_eq!(terminator_count, 1, "only the appended 0x1A terminator");
         assert_eq!(*payload.last().unwrap(), 0x1A);
 
+        // CR/LF are legal SMS body content and must be preserved.
         assert_eq!(
             payload.iter().filter(|b| **b == b'\r').count(),
-            1,
-            "only the AT command delimiter CR remains; the body CR is stripped"
+            2,
+            "the command delimiter CR plus the body CR are both present"
         );
-        assert_eq!(
-            payload.iter().filter(|b| **b == b'\n').count(),
-            0,
-            "newlines must be stripped from the body"
-        );
+        assert_eq!(payload.iter().filter(|b| **b == b'\n').count(), 1);
 
-        let needle = b"evilbodymore";
+        let needle = b"evilbody\r\nmore";
         assert!(
             payload.windows(needle.len()).any(|w| w == needle),
-            "body content survives minus control bytes"
+            "body content survives verbatim minus the 0x1A terminator"
         );
     }
 }
