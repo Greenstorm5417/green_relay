@@ -4,6 +4,8 @@
 //! heavily unit-tested part of the admin area.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use argon2::{
@@ -13,6 +15,7 @@ use argon2::{
         rand_core::{OsRng, RngCore},
     },
 };
+use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, header};
 
 use super::AdminState;
@@ -35,6 +38,18 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
+}
+
+/// A precomputed Argon2 hash used only to spend verification time when a login
+/// names a non-existent user, so a missing account costs the same as a wrong
+/// password and cannot be distinguished by response timing.
+static DUMMY_PASSWORD_HASH: LazyLock<String> =
+    LazyLock::new(|| hash_password("not-a-real-account-timing-equalizer"));
+
+/// Runs a throwaway verification against a fixed dummy hash purely to match the
+/// timing of a real `verify_password`, defeating username enumeration.
+pub(crate) fn verify_dummy_password(password: &str) {
+    let _ = verify_password(password, &DUMMY_PASSWORD_HASH);
 }
 
 /// The idle timeout duration for admin sessions.
@@ -288,8 +303,9 @@ pub(crate) fn csrf_token_for_request(
     sessions.csrf_token(&token, now)
 }
 
-/// Constant-time-ish comparison that the submitted CSRF token matches the one
-/// bound to the request's valid session.
+/// Constant-time comparison that the submitted CSRF token matches the one bound
+/// to the request's valid session, so token validation does not leak how many
+/// leading bytes matched through timing.
 pub(crate) fn csrf_valid(
     state: &AdminState,
     headers: &HeaderMap,
@@ -297,8 +313,51 @@ pub(crate) fn csrf_valid(
     now: Instant,
 ) -> bool {
     match csrf_token_for_request(state, headers, now) {
-        Some(expected) => !expected.is_empty() && expected == submitted,
+        Some(expected) => {
+            !expected.is_empty() && constant_time_eq(expected.as_bytes(), submitted.as_bytes())
+        }
         None => false,
+    }
+}
+
+/// Compares two byte slices in time independent of how many bytes match. The
+/// length is allowed to leak (session tokens are fixed-length), but the content
+/// comparison never short-circuits.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= *x ^ *y;
+    }
+    diff == 0
+}
+
+/// Extracts the client IP (as a string) from the optional connection info,
+/// falling back to a fixed bucket when the peer address is unavailable. Used as
+/// the login lockout key so failed logins throttle the originating host rather
+/// than locking out the named account (which an attacker could abuse to deny a
+/// legitimate admin access).
+///
+/// This is an infallible extractor: when the server is not serving connection
+/// info (e.g. in `oneshot` tests) it yields the `"unknown"` bucket instead of
+/// rejecting the request.
+pub(crate) struct ClientIp(pub String);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let ip = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        Ok(ClientIp(ip))
     }
 }
 
@@ -417,6 +476,14 @@ mod tests {
     }
 
     #[test]
+    fn constant_time_eq_matches_only_equal_slices() {
+        assert!(constant_time_eq(b"abc123", b"abc123"));
+        assert!(!constant_time_eq(b"abc123", b"abc124"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
     fn parse_cookie_finds_named_value() {
         assert_eq!(
             parse_cookie("a=1; admin_session=tok123; b=2", SESSION_COOKIE).as_deref(),
@@ -495,7 +562,7 @@ mod tests {
         let state = test_state().await;
         let id = seed_admin(&state, "admin", "pw").await;
         let start = Instant::now();
-        let result = perform_login(&state, "admin", "pw", start, Utc::now())
+        let result = perform_login(&state, "admin", "pw", "203.0.113.1", start, Utc::now())
             .await
             .unwrap();
         let token = match result {

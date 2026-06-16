@@ -17,7 +17,7 @@ use super::dashboard::{DashboardData, dashboard_data};
 use super::keys::{ApiKeyView, create_api_key, list_api_keys, revoke_api_key};
 use super::login::{LoginForm, LoginResult, perform_login};
 use super::session::{
-    Authz, authorize, clear_cookie, csrf_token_for_request, csrf_valid, session_cookie,
+    Authz, ClientIp, authorize, clear_cookie, csrf_token_for_request, csrf_valid, session_cookie,
     session_token_from_headers,
 };
 
@@ -42,12 +42,14 @@ pub(crate) async fn login_form() -> Html<String> {
 
 pub(crate) async fn login_submit(
     State(state): State<AdminState>,
+    ClientIp(ip): ClientIp,
     Form(form): Form<LoginForm>,
 ) -> Response {
     match perform_login(
         &state,
         &form.username,
         &form.password,
+        &ip,
         Instant::now(),
         Utc::now(),
     )

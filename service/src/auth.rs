@@ -63,8 +63,11 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 /// Checks if the presented key length is within allowed limits.
+///
+/// The bound is on the character count (per Req 3.7), not the byte length, so
+/// multi-byte keys are measured by characters rather than UTF-8 size.
 pub fn passes_guard(presented: &str) -> bool {
-    let len = presented.len();
+    let len = presented.chars().count();
     (1..=MAX_KEY_LEN).contains(&len)
 }
 

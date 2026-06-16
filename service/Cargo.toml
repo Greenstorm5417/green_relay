@@ -1,6 +1,6 @@
 [package]
 name = "green_relay"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 authors = ["Greenstorm5417 <Greenstorm5417@users.noreply.github.com>"]
 description = "SMS microservice for a Waveshare SIM7600X modem: authenticated REST API, real-time SSE event stream, and an admin dashboard."

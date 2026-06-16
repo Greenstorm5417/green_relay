@@ -411,7 +411,11 @@ pub async fn run() -> Result<(), RunError> {
         let _ = notify_tx.send(());
     };
 
-    let server = axum::serve(listener, app).with_graceful_shutdown(graceful);
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(graceful);
 
     let graceful_shutdown = async move {
         server.await.map_err(RunError::Serve)?;

@@ -44,17 +44,29 @@ export class ApiError extends Error {
 interface RequestOptions {
   method?: string;
   body?: unknown;
+  csrf?: boolean;
 }
 
+/** The CSRF synchronizer token for the current session, echoed on writes. */
+let csrfToken: string | null = null;
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body } = options;
+  const { method = "GET", body, csrf = false } = options;
+
+  const headers: Record<string, string> = {};
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (csrf && csrfToken) {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
 
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method,
       credentials: "include",
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -93,25 +105,29 @@ export const api = {
   /** Resolve true when the current session cookie is valid. */
   async isAuthenticated(): Promise<boolean> {
     try {
-      await request<void>("/api/admin/session");
+      const session = await request<{ csrfToken?: string }>("/api/admin/session");
+      csrfToken = session?.csrfToken ?? null;
       return true;
     } catch (err) {
       if (err instanceof ApiError && err.isUnauthorized) {
+        csrfToken = null;
         return false;
       }
       throw err;
     }
   },
 
-  login(username: string, password: string): Promise<void> {
-    return request<void>("/api/admin/login", {
+  async login(username: string, password: string): Promise<void> {
+    await request<void>("/api/admin/login", {
       method: "POST",
       body: { username, password },
     });
+    // The session now exists; fetch the CSRF token for subsequent writes.
+    await api.isAuthenticated();
   },
 
   logout(): Promise<void> {
-    return request<void>("/api/admin/logout", { method: "POST" });
+    return request<void>("/api/admin/logout", { method: "POST", csrf: true });
   },
 
   dashboard(): Promise<DashboardData> {
@@ -123,10 +139,10 @@ export const api = {
   },
 
   createKey(): Promise<CreatedApiKey> {
-    return request<CreatedApiKey>("/api/admin/keys", { method: "POST" });
+    return request<CreatedApiKey>("/api/admin/keys", { method: "POST", csrf: true });
   },
 
   revokeKey(id: number): Promise<void> {
-    return request<void>(`/api/admin/keys/${id}/revoke`, { method: "POST" });
+    return request<void>(`/api/admin/keys/${id}/revoke`, { method: "POST", csrf: true });
   },
 };

@@ -9,6 +9,9 @@ Type=simple
 # Load configuration from /etc/green_relay/config.yaml. Copy the shipped
 # config.example.yaml there and edit it before first start.
 Environment=SMS_CONFIG_FILE=/etc/green_relay/config.yaml
+# When the admin portal is served behind HTTPS/TLS (e.g. a reverse proxy),
+# uncomment the next line so the session cookie is only sent over HTTPS.
+#Environment=ADMIN_COOKIE_SECURE=true
 ExecStart=/usr/bin/green_relay
 Restart=on-failure
 RestartSec=5

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::db::DbError;
 
 use super::AdminState;
-use super::session::verify_password;
+use super::session::{verify_dummy_password, verify_password};
 
 /// The login form input.
 #[derive(Debug, Deserialize)]
@@ -35,10 +35,15 @@ pub enum LoginResult {
 }
 
 /// Performs the login validation.
+///
+/// `client_ip` is the lockout key: repeated failures throttle the originating
+/// host rather than the named account, so an attacker cannot lock a legitimate
+/// admin out of their own account by spraying failed logins at their username.
 pub async fn perform_login(
     state: &AdminState,
     username: &str,
     password: &str,
+    client_ip: &str,
     now: Instant,
     now_utc: DateTime<Utc>,
 ) -> Result<LoginResult, DbError> {
@@ -47,7 +52,7 @@ pub async fn perform_login(
             .login_tracker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        tracker.is_locked(username, now)
+        tracker.is_locked(client_ip, now)
     };
     if already_locked {
         state
@@ -55,7 +60,9 @@ pub async fn perform_login(
             .insert_audit(
                 "admin_login_locked_out",
                 None,
-                Some(&format!("login rejected for locked account `{username}`")),
+                Some(&format!(
+                    "login rejected from locked source for `{username}`"
+                )),
                 now_utc,
             )
             .await?;
@@ -66,7 +73,12 @@ pub async fn perform_login(
 
     let credentials_ok = match &credentials {
         Some((_, stored_hash)) => verify_password(password, stored_hash),
-        None => false,
+        None => {
+            // Spend the same Argon2 verification time as a real user so a
+            // non-existent username cannot be detected by faster responses.
+            verify_dummy_password(password);
+            false
+        }
     };
 
     if let (true, Some((admin_id, _))) = (credentials_ok, credentials.as_ref()) {
@@ -76,7 +88,7 @@ pub async fn perform_login(
                 .login_tracker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            tracker.record_success(username);
+            tracker.record_success(client_ip);
         }
         let token = {
             let mut sessions = state
@@ -102,8 +114,8 @@ pub async fn perform_login(
             .login_tracker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        tracker.record_failure(username, now);
-        tracker.is_locked(username, now)
+        tracker.record_failure(client_ip, now);
+        tracker.is_locked(client_ip, now)
     };
 
     state
@@ -150,9 +162,16 @@ mod tests {
         let state = test_state().await;
         let id = seed_admin(&state, "admin", "s3cret-pass").await;
         let now = Instant::now();
-        let result = perform_login(&state, "admin", "s3cret-pass", now, Utc::now())
-            .await
-            .unwrap();
+        let result = perform_login(
+            &state,
+            "admin",
+            "s3cret-pass",
+            "203.0.113.7",
+            now,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
         let token = match result {
             LoginResult::Success { token } => token,
             other => panic!("expected success, got {other:?}"),
@@ -171,9 +190,16 @@ mod tests {
         let state = test_state().await;
         seed_admin(&state, "admin", "correct").await;
 
-        let result = perform_login(&state, "admin", "wrong", Instant::now(), Utc::now())
-            .await
-            .unwrap();
+        let result = perform_login(
+            &state,
+            "admin",
+            "wrong",
+            "203.0.113.7",
+            Instant::now(),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
         assert_eq!(result, LoginResult::Failed);
         assert_eq!(audit_count(&state, "admin_login_failed").await, 1);
     }
@@ -181,9 +207,16 @@ mod tests {
     #[tokio::test]
     async fn unknown_user_is_rejected_and_audited() {
         let state = test_state().await;
-        let result = perform_login(&state, "ghost", "whatever", Instant::now(), Utc::now())
-            .await
-            .unwrap();
+        let result = perform_login(
+            &state,
+            "ghost",
+            "whatever",
+            "203.0.113.7",
+            Instant::now(),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
         assert_eq!(result, LoginResult::Failed);
         assert_eq!(audit_count(&state, "admin_login_failed").await, 1);
     }
@@ -199,6 +232,7 @@ mod tests {
                 &state,
                 "admin",
                 "wrong",
+                "203.0.113.7",
                 base + Duration::from_secs(i * 10),
                 Utc::now(),
             )
@@ -208,9 +242,61 @@ mod tests {
         assert_eq!(last, LoginResult::LockedOut);
         assert!(audit_count(&state, "admin_login_locked_out").await >= 1);
         let during = base + Duration::from_secs(60);
-        let blocked = perform_login(&state, "admin", "correct", during, Utc::now())
+        let blocked = perform_login(
+            &state,
+            "admin",
+            "correct",
+            "203.0.113.7",
+            during,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(blocked, LoginResult::LockedOut);
+    }
+
+    #[tokio::test]
+    async fn lockout_is_per_source_not_per_account() {
+        let state = test_state().await;
+        seed_admin(&state, "admin", "correct").await;
+        let base = Instant::now();
+
+        // An attacker hammers the admin username from one host until it locks.
+        for i in 0..5 {
+            perform_login(
+                &state,
+                "admin",
+                "wrong",
+                "198.51.100.9",
+                base + Duration::from_secs(i * 10),
+                Utc::now(),
+            )
             .await
             .unwrap();
-        assert_eq!(blocked, LoginResult::LockedOut);
+        }
+        let attacker = perform_login(
+            &state,
+            "admin",
+            "wrong",
+            "198.51.100.9",
+            base + Duration::from_secs(60),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(attacker, LoginResult::LockedOut);
+
+        // The real admin, on a different host, still authenticates.
+        let legit = perform_login(
+            &state,
+            "admin",
+            "correct",
+            "203.0.113.50",
+            base + Duration::from_secs(61),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(legit, LoginResult::Success { .. }));
     }
 }

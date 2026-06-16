@@ -18,13 +18,24 @@ use super::AdminState;
 use super::dashboard::{recent_activity, recent_message_activity};
 use super::keys::{ApiKeyView, create_api_key, list_api_keys, revoke_api_key};
 use super::login::{LoginResult, perform_login};
-use super::session::{Authz, authorize, clear_cookie, session_cookie, session_token_from_headers};
+use super::session::{
+    Authz, ClientIp, authorize, clear_cookie, csrf_token_for_request, csrf_valid, session_cookie,
+    session_token_from_headers,
+};
 
 /// Login request body posted by the admin panel.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiLoginRequest {
     username: String,
     password: String,
+}
+
+/// `GET /api/admin/session` response: confirms the session and hands the
+/// front-end the CSRF synchronizer token to echo on state-changing requests.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionJson {
+    csrf_token: String,
 }
 
 /// Generic error envelope: the front-end reads the `error` field.
@@ -124,10 +135,40 @@ fn json_server_error(message: &str) -> Response {
         .into_response()
 }
 
-/// `GET /api/admin/session` — 200 when the session cookie is valid, else 401.
+/// Compact 403 response for a missing or invalid CSRF token.
+fn json_forbidden_csrf() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiErrorBody {
+            error: "Invalid or missing CSRF token.".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// Name of the header the front-end echoes the CSRF synchronizer token in.
+const CSRF_HEADER: &str = "x-csrf-token";
+
+/// Validates the CSRF token submitted in the `X-CSRF-Token` header against the
+/// token bound to the request's session. State-changing JSON endpoints require
+/// this in addition to the `SameSite=Strict` cookie.
+fn json_csrf_ok(state: &AdminState, headers: &HeaderMap, now: Instant) -> bool {
+    let submitted = headers
+        .get(CSRF_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    csrf_valid(state, headers, submitted, now)
+}
+
+/// `GET /api/admin/session` — 200 with the CSRF token when the session cookie
+/// is valid, else 401.
 pub(crate) async fn api_session(State(state): State<AdminState>, headers: HeaderMap) -> Response {
-    match authorize(&state, &headers, Instant::now()) {
-        Authz::Authorized(_) => StatusCode::OK.into_response(),
+    let now = Instant::now();
+    match authorize(&state, &headers, now) {
+        Authz::Authorized(_) => {
+            let csrf_token = csrf_token_for_request(&state, &headers, now).unwrap_or_default();
+            Json(SessionJson { csrf_token }).into_response()
+        }
         Authz::Redirect => StatusCode::UNAUTHORIZED.into_response(),
     }
 }
@@ -135,12 +176,14 @@ pub(crate) async fn api_session(State(state): State<AdminState>, headers: Header
 /// `POST /api/admin/login` — authenticate and set the session cookie.
 pub(crate) async fn api_login(
     State(state): State<AdminState>,
+    ClientIp(ip): ClientIp,
     Json(body): Json<ApiLoginRequest>,
 ) -> Response {
     match perform_login(
         &state,
         &body.username,
         &body.password,
+        &ip,
         Instant::now(),
         Utc::now(),
     )
@@ -175,6 +218,13 @@ pub(crate) async fn api_login(
 
 /// `POST /api/admin/logout` — drop the session and clear the cookie.
 pub(crate) async fn api_logout(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !json_csrf_ok(&state, &headers, now) {
+        return json_forbidden_csrf();
+    }
     if let Some(token) = session_token_from_headers(&headers) {
         state
             .sessions
@@ -237,8 +287,12 @@ pub(crate) async fn api_keys_create(
     State(state): State<AdminState>,
     headers: HeaderMap,
 ) -> Response {
-    if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !json_csrf_ok(&state, &headers, now) {
+        return json_forbidden_csrf();
     }
     match create_api_key(&state, Utc::now()).await {
         Ok((plaintext, view)) => (
@@ -259,8 +313,12 @@ pub(crate) async fn api_keys_revoke(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    if authorize(&state, &headers, Instant::now()) == Authz::Redirect {
+    let now = Instant::now();
+    if authorize(&state, &headers, now) == Authz::Redirect {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !json_csrf_ok(&state, &headers, now) {
+        return json_forbidden_csrf();
     }
     match revoke_api_key(&state, id, Utc::now()).await {
         Ok(_) => StatusCode::OK.into_response(),
