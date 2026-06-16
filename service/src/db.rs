@@ -408,12 +408,21 @@ impl Db {
     }
 
     /// Inserts a new (non-revoked) API key, returning its row id.
-    pub async fn insert_api_key(&self, identifier: &str, created_at: &str) -> Result<i64, DbError> {
+    ///
+    /// `key_hash` is a slow (Argon2) hash of the plaintext key used for secure
+    /// storage; `identifier` is the deterministic SHA-256 hex used for fast
+    /// lookup on the authentication path.
+    pub async fn insert_api_key(
+        &self,
+        key_hash: &str,
+        identifier: &str,
+        created_at: &str,
+    ) -> Result<i64, DbError> {
         let result = sqlx::query(
             "INSERT INTO api_keys (key_hash, key_identifier, custom_rate_limit, revoked, created_at) \
              VALUES (?, ?, NULL, 0, ?)",
         )
-        .bind(identifier)
+        .bind(key_hash)
         .bind(identifier)
         .bind(created_at)
         .execute(self.pool())

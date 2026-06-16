@@ -9,7 +9,7 @@ use crate::auth::key_identifier;
 use crate::db::DbError;
 
 use super::AdminState;
-use super::session::random_token;
+use super::session::{hash_password, random_token};
 
 /// View model representing an API key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -33,10 +33,11 @@ pub async fn create_api_key(
 ) -> Result<(String, ApiKeyView), DbError> {
     let plaintext = format!("sk_{}", random_token());
     let identifier = key_identifier(&plaintext);
+    let key_hash = hash_password(&plaintext);
 
     let id = state
         .db
-        .insert_api_key(&identifier, &now_utc.to_rfc3339())
+        .insert_api_key(&key_hash, &identifier, &now_utc.to_rfc3339())
         .await?;
 
     state
