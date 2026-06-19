@@ -525,8 +525,7 @@ mod at_parsing_tests {
 
     #[test]
     fn cmgr_leaves_gsm7_body_untouched_with_dcs_zero() {
-        let response =
-            "+CMGR: \"REC UNREAD\",\"+14155550123\",,\"24/01/02,03:04:05+00\",145,4,0,0,\"+1000\",145,5\r\nhello\r\nOK";
+        let response = "+CMGR: \"REC UNREAD\",\"+14155550123\",,\"24/01/02,03:04:05+00\",145,4,0,0,\"+1000\",145,5\r\nhello\r\nOK";
         let parsed = parse_cmgr(response).expect("GSM-7 inbound parses");
         assert_eq!(parsed.body, "hello");
     }
@@ -535,8 +534,7 @@ mod at_parsing_tests {
     fn cmgr_ucs2_dcs_with_non_hex_body_falls_back_to_raw() {
         // DCS says UCS2 but the body is not valid UCS2 hex: keep it verbatim
         // rather than dropping the message.
-        let response =
-            "+CMGR: \"REC UNREAD\",\"+14155550123\",,\"24/01/02,03:04:05+00\",145,4,0,8,\"+1000\",145,5\r\nnot-hex\r\nOK";
+        let response = "+CMGR: \"REC UNREAD\",\"+14155550123\",,\"24/01/02,03:04:05+00\",145,4,0,8,\"+1000\",145,5\r\nnot-hex\r\nOK";
         let parsed = parse_cmgr(response).expect("falls back to raw body");
         assert_eq!(parsed.body, "not-hex");
     }

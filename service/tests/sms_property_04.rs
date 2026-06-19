@@ -42,7 +42,13 @@ fn is_ucs2(s: &str) -> bool {
 /// Oracle GSM-7 length of a string, in septets.
 fn gsm7_len(s: &str) -> usize {
     s.chars()
-        .map(|c| if GSM7_EXTENSION_CHARS.contains(&c) { 2 } else { 1 })
+        .map(|c| {
+            if GSM7_EXTENSION_CHARS.contains(&c) {
+                2
+            } else {
+                1
+            }
+        })
         .sum()
 }
 
