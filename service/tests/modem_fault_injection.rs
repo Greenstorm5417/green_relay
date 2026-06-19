@@ -156,9 +156,12 @@ async fn send_retries_after_transient_error_then_succeeds() {
     let status = ready_status();
 
     // CMGF ok; first send attempt hits a transient +CMS ERROR; retry succeeds.
+    // Each attempt re-opens text-entry, so each gets its own `>` prompt.
     let mut transport = FaultTransport::new(vec![
         Step::Line("OK"),
+        Step::Line(">"),
         Step::Line("+CMS ERROR: 500"),
+        Step::Line(">"),
         Step::Line("+CMGS: 7"),
         Step::Line("OK"),
     ]);
@@ -202,6 +205,7 @@ async fn noisy_unsolicited_lines_before_terminators_are_tolerated() {
         Step::Line("RING"),
         Step::Line("OK"),
         Step::Line("^BOOT: garbage"),
+        Step::Line(">"), // text-entry prompt, after the interleaved noise
         Step::Line("+CMGS: 9"),
         Step::Line("OK"),
     ]);
@@ -222,9 +226,12 @@ async fn send_exhausts_attempts_on_repeated_transient_errors() {
     let status = ready_status();
 
     // CMGF ok, then every attempt (send_max_attempts = 2) returns an error.
+    // Each attempt re-opens text-entry, so each gets its own `>` prompt.
     let mut transport = FaultTransport::new(vec![
         Step::Line("OK"),
+        Step::Line(">"),
         Step::Line("+CMS ERROR: 500"),
+        Step::Line(">"),
         Step::Line("+CMS ERROR: 500"),
     ]);
 

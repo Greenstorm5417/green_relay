@@ -100,6 +100,40 @@ pub fn classify_line(line: &str) -> LineClass {
     LineClass::NonTerminating
 }
 
+/// Control byte (Ctrl-Z, `0x1A`) that submits the buffered SMS body at the
+/// text-entry prompt.
+pub const SMS_SUBMIT: u8 = 0x1A;
+
+/// Control byte (ESC, `0x1B`) that aborts SMS text-entry and reverts the modem
+/// to command mode without sending anything.
+pub const SMS_ABORT: u8 = 0x1B;
+
+/// The interaction mode of the modem's AT line.
+///
+/// SIM7600 SMS submission is a two-phase exchange: an `AT+CMGS=...` command
+/// puts the line into text-entry mode at the `>` prompt, where it waits for the
+/// body terminated by Ctrl-Z (submit) or ESC (abort). Tracking this lets the
+/// session always revert to [`ModemMode::Command`] after a failed or timed-out
+/// send instead of leaving the modem wedged at the prompt, where it would
+/// silently swallow every subsequent AT command as message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModemMode {
+    /// Normal AT command mode: ready to accept commands.
+    #[default]
+    Command,
+    /// `AT+CMGS=...` written; awaiting the `>` text-entry prompt.
+    AwaitingPrompt,
+    /// `>` prompt received; the body may be written, then Ctrl-Z or ESC.
+    TextEntry,
+}
+
+/// Returns true if a raw fragment from the modem carries the SMS text-entry
+/// prompt. The prompt arrives as `"> "` with no trailing newline, so it is
+/// never surfaced as an ordinary, newline-terminated response line.
+pub fn is_prompt(fragment: &str) -> bool {
+    fragment.trim_start().starts_with('>')
+}
+
 /// Formats a `+CMGS` response line for a given message reference.
 pub fn format_cmgs_response(reference: u32) -> String {
     format!("+CMGS: {reference}")
@@ -180,11 +214,17 @@ pub fn format_cmgr_response(sender: &str, body: &str) -> String {
 }
 
 /// Parses a `+CMGR` response into the inbound sender and body.
+///
+/// When the detailed header (enabled by `AT+CSDH=1`) reports a UCS2 data-coding
+/// scheme, the body is presented as a UTF-16BE hex string and is decoded back to
+/// text here; GSM-7 messages (or any body that is not valid UCS2 hex) pass
+/// through unchanged.
 pub fn parse_cmgr(response: &str) -> Option<ParsedInbound> {
     let mut lines = response.lines();
 
     let header = lines.find(|l| l.trim_start().starts_with("+CMGR:"))?;
     let sender = parse_cmgr_sender(header)?;
+    let is_ucs2 = cmgr_dcs_is_ucs2(header);
 
     let mut body_lines: Vec<&str> = Vec::new();
     for line in lines {
@@ -193,7 +233,13 @@ pub fn parse_cmgr(response: &str) -> Option<ParsedInbound> {
             LineClass::NonTerminating => body_lines.push(line),
         }
     }
-    let body = body_lines.join("\n");
+    let raw_body = body_lines.join("\n");
+
+    let body = if is_ucs2 {
+        crate::sms::ucs2_hex_decode(raw_body.trim()).unwrap_or(raw_body)
+    } else {
+        raw_body
+    };
 
     Some(ParsedInbound { sender, body })
 }
@@ -203,6 +249,20 @@ fn parse_cmgr_sender(header: &str) -> Option<String> {
     let fields = split_quoted_csv(rest.trim());
     let sender = fields.get(1)?.trim().trim_matches('"').to_string();
     Some(sender)
+}
+
+/// Returns true when a detailed `+CMGR` header reports a UCS2 data-coding
+/// scheme. With `AT+CSDH=1` the `<dcs>` is the 8th field (index 7); the UCS2
+/// alphabet is indicated by bits 3-2 = `01` (e.g. `dcs == 8`).
+fn cmgr_dcs_is_ucs2(header: &str) -> bool {
+    let Some(rest) = header.trim_start().strip_prefix("+CMGR:") else {
+        return false;
+    };
+    let fields = split_quoted_csv(rest.trim());
+    fields
+        .get(7)
+        .and_then(|f| f.trim().trim_matches('"').parse::<u16>().ok())
+        .is_some_and(|dcs| dcs & 0x0C == 0x08)
 }
 
 fn split_quoted_csv(s: &str) -> Vec<String> {
@@ -322,6 +382,36 @@ mod at_parsing_tests {
     }
 
     #[test]
+    fn detects_sms_text_entry_prompt() {
+        assert!(is_prompt("> "));
+        assert!(is_prompt(">"));
+        assert!(is_prompt("\r\n> "));
+        assert!(is_prompt("   >"));
+        // The prompt classifies as a non-terminating line, but `is_prompt`
+        // recognizes it where `classify_line` (deliberately) does not.
+        assert_eq!(classify_line("> "), LineClass::NonTerminating);
+    }
+
+    #[test]
+    fn non_prompt_fragments_are_not_prompts() {
+        assert!(!is_prompt(""));
+        assert!(!is_prompt("OK"));
+        assert!(!is_prompt("+CMGS: 7"));
+        assert!(!is_prompt("a > b"));
+    }
+
+    #[test]
+    fn modem_mode_defaults_to_command() {
+        assert_eq!(ModemMode::default(), ModemMode::Command);
+    }
+
+    #[test]
+    fn sms_control_bytes_are_ctrl_z_and_esc() {
+        assert_eq!(SMS_SUBMIT, 0x1A);
+        assert_eq!(SMS_ABORT, 0x1B);
+    }
+
+    #[test]
     fn error_with_unparseable_code_still_terminates() {
         assert_eq!(
             classify_line("+CME ERROR: SIM not inserted"),
@@ -418,6 +508,47 @@ mod at_parsing_tests {
     fn cmgr_sender_parsing_ignores_timestamp_comma() {
         let header = "+CMGR: \"REC READ\",\"+441234567\",,\"24/01/02,03:04:05+00\"";
         assert_eq!(parse_cmgr_sender(header), Some("+441234567".to_string()));
+    }
+
+    #[test]
+    fn cmgr_decodes_ucs2_body_when_dcs_indicates_ucs2() {
+        // Detailed header (AT+CSDH=1): fields ... ,<tooa>,<fo>,<pid>,<dcs>,...
+        // dcs=8 -> UCS2; body "0048 0069 0020 1F60(?)" -> here "Hi 😀".
+        let hex = crate::sms::ucs2_hex_encode("Hi 😀");
+        let response = format!(
+            "+CMGR: \"REC UNREAD\",\"+14155550123\",,\"24/01/02,03:04:05+00\",145,4,0,8,\"+1000\",145,8\r\n{hex}\r\nOK"
+        );
+        let parsed = parse_cmgr(&response).expect("UCS2 inbound parses");
+        assert_eq!(parsed.sender, "+14155550123");
+        assert_eq!(parsed.body, "Hi 😀");
+    }
+
+    #[test]
+    fn cmgr_leaves_gsm7_body_untouched_with_dcs_zero() {
+        let response =
+            "+CMGR: \"REC UNREAD\",\"+14155550123\",,\"24/01/02,03:04:05+00\",145,4,0,0,\"+1000\",145,5\r\nhello\r\nOK";
+        let parsed = parse_cmgr(response).expect("GSM-7 inbound parses");
+        assert_eq!(parsed.body, "hello");
+    }
+
+    #[test]
+    fn cmgr_ucs2_dcs_with_non_hex_body_falls_back_to_raw() {
+        // DCS says UCS2 but the body is not valid UCS2 hex: keep it verbatim
+        // rather than dropping the message.
+        let response =
+            "+CMGR: \"REC UNREAD\",\"+14155550123\",,\"24/01/02,03:04:05+00\",145,4,0,8,\"+1000\",145,5\r\nnot-hex\r\nOK";
+        let parsed = parse_cmgr(response).expect("falls back to raw body");
+        assert_eq!(parsed.body, "not-hex");
+    }
+
+    #[test]
+    fn cmgr_dcs_detection_reads_the_eighth_field() {
+        let ucs2 = "+CMGR: \"REC UNREAD\",\"+1\",,\"ts\",145,4,0,8,\"+1\",145,4";
+        let gsm7 = "+CMGR: \"REC UNREAD\",\"+1\",,\"ts\",145,4,0,0,\"+1\",145,4";
+        let short = "+CMGR: \"REC UNREAD\",\"+1\",,\"ts\"";
+        assert!(cmgr_dcs_is_ucs2(ucs2));
+        assert!(!cmgr_dcs_is_ucs2(gsm7));
+        assert!(!cmgr_dcs_is_ucs2(short)); // no DCS field -> treat as GSM-7
     }
 }
 

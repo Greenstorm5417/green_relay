@@ -31,13 +31,17 @@ use crate::health::{ModemStatusSnapshot, SimStatus};
 use crate::models::MessageStatus;
 
 pub use protocol::{
-    AtExchange, AtResult, LineClass, ParsedInbound, RECONNECT_BACKOFF_CAP_SECS, SendOutcome,
-    classify_line, format_cmgr_response, format_cmgs_response, parse_cmgr, parse_cmgs_reference,
-    parse_cmti_index, parse_cops_operator, parse_cpin, parse_creg_registered, parse_csq_percent,
-    parse_send_outcome, reconnect_backoff_schedule, reconnect_backoff_secs,
+    AtExchange, AtResult, LineClass, ModemMode, ParsedInbound, RECONNECT_BACKOFF_CAP_SECS,
+    SMS_ABORT, SMS_SUBMIT, SendOutcome, classify_line, format_cmgr_response, format_cmgs_response,
+    is_prompt, parse_cmgr, parse_cmgs_reference, parse_cmti_index, parse_cops_operator, parse_cpin,
+    parse_creg_registered, parse_csq_percent, parse_send_outcome, reconnect_backoff_schedule,
+    reconnect_backoff_secs,
 };
 pub use session::{SessionOutcome, handle_inbound, handle_send, initialize, run_session};
-pub use transport::{SerialPortTransport, SerialTransport, exchange};
+pub use transport::{
+    SerialPortTransport, SerialTransport, abort_to_command_mode, exchange, recover_command_mode,
+    send_sms_part,
+};
 
 use session::{audit, run_session_inner};
 use transport::open_serial;
@@ -172,6 +176,19 @@ pub async fn run_modem_manager(cfg: Config, db: Db, endpoint: ModemEndpoint, eve
 
                 let mut transport = SerialPortTransport::new(stream);
                 let timeout = Duration::from_secs(cfg.at_timeout_secs);
+
+                // Rescue a modem left at the SMS `>` prompt by a prior crashed
+                // or timed-out send before we try to initialize: an ESC reverts
+                // it to command mode so the init commands are not swallowed as
+                // message text.
+                if recover_command_mode(&mut transport).await.is_err() {
+                    tracing::error!("serial port lost during modem recovery");
+                    mark_disconnected(&status);
+                    if !backoff_or_giveup(&db, &cfg, &status, &mut attempt).await {
+                        return;
+                    }
+                    continue;
+                }
 
                 match initialize(&cfg, &mut transport, timeout).await {
                     Ok(true) => {}

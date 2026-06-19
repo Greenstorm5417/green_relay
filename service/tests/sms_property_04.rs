@@ -3,48 +3,82 @@
 //! This test lives in its own integration-test crate (separate from
 //! `src/sms.rs`) per the spec's test-placement note, and exercises the public
 //! `segment_message` function of the `green_relay` library.
+//!
+//! Segmentation is encoding-aware: a body that is fully GSM-7 representable is
+//! measured in septets (160 single / 153 concatenated), while a body containing
+//! any non-GSM-7 character (here 中 / あ) is sent as UCS2 and measured in UTF-16
+//! code units (70 single / 67 concatenated). Note the GSM-7 alphabet includes
+//! the Greek capitals (Δ Φ Γ Λ Ω Π Ψ Σ Θ Ξ) and the common European accented
+//! letters, so those stay GSM-7. The oracle below mirrors that model
+//! independently of the implementation.
 
 use green_relay::sms::{SegmentError, segment_message};
 use proptest::prelude::*;
 
-/// Per-part GSM-7 budget for a concatenated (multi-part) SMS.
-const MULTI_PART_MAX: usize = 153;
+/// GSM-7 single-part / concatenated-part budgets, in septets.
+const GSM7_SINGLE_MAX: usize = 160;
+const GSM7_MULTI_MAX: usize = 153;
 
-/// Single-part GSM-7 budget for an unsegmented SMS.
-const SINGLE_PART_MAX: usize = 160;
+/// UCS2 single-part / concatenated-part budgets, in UTF-16 code units.
+const UCS2_SINGLE_MAX: usize = 70;
+const UCS2_MULTI_MAX: usize = 67;
 
 /// Maximum number of parts a message may be split into (Req 1.8).
 const MAX_PARTS: usize = 10;
 
 /// GSM-7 "extension table" characters, mirrored from the implementation.
-/// Each of these occupies two septets; every other character occupies one.
+/// Each of these occupies two septets; every other GSM-7 character occupies one.
 const GSM7_EXTENSION_CHARS: [char; 9] = ['^', '{', '}', '\\', '[', '~', ']', '|', '€'];
 
-/// Independent oracle for the GSM-7 length (in septets) of a single character,
-/// written separately from the implementation so the property checks the
-/// implementation against the specification's GSM-7 model rather than itself.
-fn gsm7_char_len(c: char) -> usize {
-    if GSM7_EXTENSION_CHARS.contains(&c) {
-        2
+/// The non-GSM-7 characters in the generator pool. Their presence forces UCS2.
+/// (Ω is intentionally absent — it is a GSM-7 character.)
+const NON_GSM7_CHARS: [char; 2] = ['中', 'あ'];
+
+/// Independent oracle: does this body require UCS2 encoding?
+fn is_ucs2(s: &str) -> bool {
+    s.chars().any(|c| NON_GSM7_CHARS.contains(&c))
+}
+
+/// Oracle GSM-7 length of a string, in septets.
+fn gsm7_len(s: &str) -> usize {
+    s.chars()
+        .map(|c| if GSM7_EXTENSION_CHARS.contains(&c) { 2 } else { 1 })
+        .sum()
+}
+
+/// Oracle UCS2 length of a string, in UTF-16 code units.
+fn ucs2_len(s: &str) -> usize {
+    s.chars().map(char::len_utf16).sum()
+}
+
+/// Oracle length of a string measured in the units of the chosen encoding.
+/// The encoding is a property of the *whole message*, so a segment of a UCS2
+/// message that happens to contain only GSM-7 characters is still measured in
+/// UTF-16 units — hence the explicit `ucs2` flag rather than re-deciding here.
+fn encoded_len(s: &str, ucs2: bool) -> usize {
+    if ucs2 { ucs2_len(s) } else { gsm7_len(s) }
+}
+
+/// The (single, multi) per-part budgets for the chosen encoding.
+fn budgets(ucs2: bool) -> (usize, usize) {
+    if ucs2 {
+        (UCS2_SINGLE_MAX, UCS2_MULTI_MAX)
     } else {
-        1
+        (GSM7_SINGLE_MAX, GSM7_MULTI_MAX)
     }
 }
 
-/// Oracle GSM-7 length of a string.
-fn gsm7_len(s: &str) -> usize {
-    s.chars().map(gsm7_char_len).sum()
-}
-
 /// Pool of characters used to build bodies: a spread of single-septet ASCII,
-/// multibyte single-septet characters, and the two-septet extension chars so
-/// generation exercises both length classes and split boundaries.
+/// multibyte single-septet GSM-7 characters, non-GSM-7 characters that force
+/// UCS2, and the two-septet extension chars so generation exercises every
+/// length class and split boundary.
 fn body_char() -> impl Strategy<Value = char> {
     prop_oneof![
         70 => prop::sample::select(
             "abcdefghijklmnopqrstuvwxyz0123456789 .,!?".chars().collect::<Vec<_>>(),
         ),
-        15 => prop::sample::select(vec!['é', 'ñ', 'ü', '中', 'あ', 'Ω']),
+        8 => prop::sample::select(vec!['é', 'ñ', 'ü', 'Ω']),
+        7 => prop::sample::select(NON_GSM7_CHARS.to_vec()),
         15 => prop::sample::select(GSM7_EXTENSION_CHARS.to_vec()),
     ]
 }
@@ -62,13 +96,18 @@ proptest! {
     // Feature: sms-microservice, Property 4: Segmentation preserves content
     // and bounds. For any valid message body, the segments produced by
     // `segment_message` concatenate back to the original body, each segment is
-    // at most 153 GSM-7 characters, sequence numbers are contiguous and
-    // ascending starting at 1, there are at most 10 segments, and any body of
-    // 160 or fewer GSM-7 characters yields exactly one segment.
+    // within the per-part budget of the selected encoding, sequence numbers are
+    // contiguous and ascending starting at 1, there are at most 10 segments, and
+    // any body within the single-part budget yields exactly one segment.
     //
     // Validates: Requirements 1.8
     #[test]
     fn prop_segmentation_preserves_content_and_bounds(body in body()) {
+        // The encoding is decided once, from the whole body, and all lengths
+        // below are measured in that encoding's units.
+        let ucs2 = is_ucs2(&body);
+        let (single_max, multi_max) = budgets(ucs2);
+
         match segment_message(&body) {
             Ok(segments) => {
                 // At most 10 segments (Req 1.8).
@@ -94,20 +133,20 @@ proptest! {
                     );
                 }
 
-                // Per-part GSM-7 bound (Req 1.8): a single (unsegmented) part
-                // may carry up to 160 septets, while each part of a multi-part
-                // message is at most 153 septets.
+                // Per-part bound (Req 1.8): a single (unsegmented) part may
+                // carry up to the single-part budget; each part of a multi-part
+                // message is at most the concatenated budget.
                 let per_part_max = if segments.len() == 1 {
-                    SINGLE_PART_MAX
+                    single_max
                 } else {
-                    MULTI_PART_MAX
+                    multi_max
                 };
                 for seg in &segments {
                     prop_assert!(
-                        gsm7_len(&seg.text) <= per_part_max,
-                        "segment {} has GSM-7 length {}, exceeding {}",
+                        encoded_len(&seg.text, ucs2) <= per_part_max,
+                        "segment {} has encoded length {}, exceeding {}",
                         seg.seq,
-                        gsm7_len(&seg.text),
+                        encoded_len(&seg.text, ucs2),
                         per_part_max
                     );
                 }
@@ -116,13 +155,13 @@ proptest! {
                 let joined: String = segments.iter().map(|s| s.text.as_str()).collect();
                 prop_assert_eq!(&joined, &body, "concatenated segments do not match the body");
 
-                // Any body of <= 160 GSM-7 chars yields exactly one segment.
-                if gsm7_len(&body) <= SINGLE_PART_MAX {
+                // Any body within the single-part budget yields exactly one segment.
+                if encoded_len(&body, ucs2) <= single_max {
                     prop_assert_eq!(
                         segments.len(),
                         1,
-                        "body of GSM-7 length {} should be a single segment, got {}",
-                        gsm7_len(&body),
+                        "body of encoded length {} should be a single segment, got {}",
+                        encoded_len(&body, ucs2),
                         segments.len()
                     );
                 }
@@ -137,10 +176,10 @@ proptest! {
                     MAX_PARTS
                 );
                 prop_assert!(
-                    gsm7_len(&body) > SINGLE_PART_MAX,
-                    "a body of GSM-7 length {} (<= {}) must not be rejected as too many parts",
-                    gsm7_len(&body),
-                    SINGLE_PART_MAX
+                    encoded_len(&body, ucs2) > single_max,
+                    "a body of encoded length {} (<= {}) must not be rejected as too many parts",
+                    encoded_len(&body, ucs2),
+                    single_max
                 );
             }
         }

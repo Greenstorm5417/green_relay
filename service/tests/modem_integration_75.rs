@@ -208,8 +208,8 @@ const AT_TIMEOUT: Duration = Duration::from_secs(5);
 async fn initialization_issues_sms_setup_sequence_in_order() {
     let cfg = test_config(Some("+12085551212"));
     let mut modem = MockModem::new();
-    // Each of the four init commands is acknowledged with OK.
-    for _ in 0..4 {
+    // Each of the five init commands is acknowledged with OK.
+    for _ in 0..5 {
         modem.push_line("OK");
     }
 
@@ -222,6 +222,7 @@ async fn initialization_issues_sms_setup_sequence_in_order() {
             "AT+CMGF=1".to_string(),
             "AT+CSCS=\"IRA\"".to_string(),
             "AT+CSMP=17,167,0,0".to_string(),
+            "AT+CSDH=1".to_string(),
             "AT+CSCA=\"+12085551212\"".to_string(),
         ]
     );
@@ -237,16 +238,18 @@ async fn initialization_error_reports_failure_but_continues() {
     modem.push_line("OK"); // AT+CMGF=1
     modem.push_line("ERROR"); // AT+CSCS="IRA" fails
     modem.push_line("OK"); // AT+CSMP=17,167,0,0 still issued
+    modem.push_line("OK"); // AT+CSDH=1 still issued
 
     let ok = initialize(&cfg, &mut modem, AT_TIMEOUT).await.unwrap();
     assert!(!ok, "init reports failure when a command errors");
-    // All three commands were still issued (the error did not abort the run).
+    // All commands were still issued (the error did not abort the run).
     assert_eq!(
         modem.commands(),
         vec![
             "AT+CMGF=1".to_string(),
             "AT+CSCS=\"IRA\"".to_string(),
             "AT+CSMP=17,167,0,0".to_string(),
+            "AT+CSDH=1".to_string(),
         ]
     );
 }
@@ -262,6 +265,7 @@ async fn send_sets_text_mode_before_transmitting() {
 
     let mut modem = MockModem::new();
     modem.push_line("OK"); // AT+CMGF=1
+    modem.push_line(">"); // AT+CMGS text-entry prompt
     modem.push_line("+CMGS: 7"); // AT+CMGS intermediate result
     modem.push_line("OK"); // AT+CMGS terminator
 
@@ -283,6 +287,62 @@ async fn send_sets_text_mode_before_transmitting() {
     assert!(
         cmgf < cmgs,
         "AT+CMGF=1 must precede AT+CMGS, got commands: {cmds:?}"
+    );
+}
+
+/// A Unicode (emoji) body is sent as UCS2: the charset is switched to UCS2 with
+/// data-coding scheme 8, the address and body are hex-encoded, and the GSM-7
+/// defaults are restored afterwards (Req: full Unicode support).
+#[tokio::test]
+async fn unicode_body_sends_as_ucs2_and_restores_charset() {
+    let file = TempDbFile::new();
+    let db = fresh_db(&file).await;
+    let cfg = test_config(None);
+    let status = ready_status();
+
+    let mut modem = MockModem::new();
+    modem.push_line("OK"); // AT+CMGF=1
+    modem.push_line("OK"); // AT+CSCS="UCS2"
+    modem.push_line("OK"); // AT+CSMP=17,167,0,8
+    modem.push_line(">"); // CMGS text-entry prompt
+    modem.push_line("+CMGS: 5"); // send reference
+    modem.push_line("OK"); // CMGS terminator
+    modem.push_line("OK"); // AT+CSCS="IRA" restore
+    modem.push_line("OK"); // AT+CSMP=17,167,0,0 restore
+
+    let result = handle_send(&mut modem, &cfg, &db, &status, "+14155552671", "tea 🍵")
+        .await
+        .unwrap();
+    assert_eq!(result.status, MessageStatus::Sent);
+    assert_eq!(result.reference, Some("5".to_string()));
+
+    let cmds = modem.commands();
+    assert!(
+        cmds.iter().any(|c| c == "AT+CSCS=\"UCS2\""),
+        "charset switched to UCS2: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| c == "AT+CSMP=17,167,0,8"),
+        "data-coding scheme set to UCS2 (8): {cmds:?}"
+    );
+    // The address is UCS2 hex, so the plain number must NOT appear.
+    assert!(
+        !cmds.iter().any(|c| c.contains("+14155552671")),
+        "address must be UCS2-hex encoded, not plain: {cmds:?}"
+    );
+    // '🍵' (U+1F375) -> surrogate pair D83C DF75 appears in the hex body.
+    assert!(
+        cmds.iter().any(|c| c.to_uppercase().contains("D83CDF75")),
+        "emoji body is UCS2 hex: {cmds:?}"
+    );
+    // Charset restored to GSM-7 defaults after the send.
+    assert!(
+        cmds.iter().any(|c| c == "AT+CSCS=\"IRA\""),
+        "charset restored to IRA: {cmds:?}"
+    );
+    assert!(
+        cmds.iter().any(|c| c == "AT+CSMP=17,167,0,0"),
+        "CSMP restored to GSM-7 default: {cmds:?}"
     );
 }
 
@@ -509,8 +569,8 @@ async fn disconnect_triggers_reconnect_and_reinitialization() {
 
     let mut modem = MockModem::new();
 
-    // Connection epoch 1: initialization succeeds (CMGF, CSCS, CSMP).
-    for _ in 0..3 {
+    // Connection epoch 1: initialization succeeds (CMGF, CSCS, CSMP, CSDH).
+    for _ in 0..4 {
         modem.push_line("OK");
     }
     assert!(initialize(&cfg, &mut modem, AT_TIMEOUT).await.unwrap());
@@ -527,7 +587,7 @@ async fn disconnect_triggers_reconnect_and_reinitialization() {
 
     // Connection epoch 2: on reconnect the manager re-issues initialization.
     let before_reinit = modem.commands().len();
-    for _ in 0..3 {
+    for _ in 0..4 {
         modem.push_line("OK");
     }
     assert!(initialize(&cfg, &mut modem, AT_TIMEOUT).await.unwrap());
@@ -539,6 +599,7 @@ async fn disconnect_triggers_reconnect_and_reinitialization() {
             "AT+CMGF=1".to_string(),
             "AT+CSCS=\"IRA\"".to_string(),
             "AT+CSMP=17,167,0,0".to_string(),
+            "AT+CSDH=1".to_string(),
         ],
         "initialization commands must be re-issued on reconnect (Req 10.2)"
     );

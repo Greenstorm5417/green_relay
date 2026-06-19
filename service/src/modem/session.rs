@@ -15,16 +15,18 @@ use crate::db::Db;
 use crate::events::{EventBus, InboundSmsEvent, ServiceEvent};
 use crate::health::ModemStatusSnapshot;
 use crate::models::MessageStatus;
-use crate::sms::{build_cmgs, segment_message};
+use crate::sms::{Segment, SmsEncoding, message_encoding, segment_message};
 
 use super::protocol::{
     AtResult, ParsedInbound, parse_cmgr, parse_cmti_index, parse_cops_operator, parse_cpin,
     parse_creg_registered, parse_csq_percent, parse_send_outcome,
 };
-use super::transport::{SerialTransport, collect_until_terminator, exchange};
+use super::transport::{SerialTransport, exchange, send_sms_part};
 use super::{ModemRequest, SendResult};
 
 const SEND_RESULT_TIMEOUT_SECS: u64 = 30;
+/// How long to wait for the modem's `>` text-entry prompt after `AT+CMGS=...`.
+const SEND_PROMPT_TIMEOUT_SECS: u64 = 8;
 const CMGR_READ_TIMEOUT_SECS: u64 = 10;
 const URC_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -57,6 +59,9 @@ pub async fn initialize<T: SerialTransport>(
         "AT+CMGF=1".to_string(),
         "AT+CSCS=\"IRA\"".to_string(),
         "AT+CSMP=17,167,0,0".to_string(),
+        // Show the detailed text-mode header (incl. the data-coding scheme) on
+        // +CMGR reads, so inbound UCS2 messages can be detected and decoded.
+        "AT+CSDH=1".to_string(),
     ];
     if let Some(csca) = &cfg.service_center_number {
         commands.push(format!("AT+CSCA=\"{csca}\""));
@@ -196,16 +201,19 @@ async fn send_part_with_retries<T: SerialTransport>(
     db: &Db,
     to: &str,
     part: &str,
+    encoding: SmsEncoding,
 ) -> std::io::Result<SendResult> {
     let max_attempts = cfg.send_max_attempts.max(1);
     let retry_delay = Duration::from_secs(cfg.send_retry_delay_secs);
-    let send_timeout = Duration::from_secs(SEND_RESULT_TIMEOUT_SECS);
+    let prompt_timeout = Duration::from_secs(SEND_PROMPT_TIMEOUT_SECS);
+    let result_timeout = Duration::from_secs(SEND_RESULT_TIMEOUT_SECS);
     let mut last_code: Option<u16> = None;
 
     for attempt in 1..=max_attempts {
-        let payload = build_cmgs(to, part);
-        t.write_bytes(&payload).await?;
-        let exchange = collect_until_terminator(t, "AT+CMGS", send_timeout).await?;
+        // The two-phase exchange tracks the modem's text-entry state and always
+        // reverts to command mode on a prompt/result timeout, so a failed send
+        // never leaves the modem wedged at the `>` prompt for the next command.
+        let exchange = send_sms_part(t, to, part, encoding, prompt_timeout, result_timeout).await?;
         tracing::debug!(command = "AT+CMGS", result = %exchange.result, attempt, "at_exchange");
 
         let line_refs: Vec<&str> = exchange.lines.iter().map(String::as_str).collect();
@@ -278,6 +286,7 @@ pub async fn handle_send<T: SerialTransport>(
         });
     }
 
+    let encoding = message_encoding(body);
     let segments = match segment_message(body) {
         Ok(segments) => segments,
         Err(e) => {
@@ -296,12 +305,62 @@ pub async fn handle_send<T: SerialTransport>(
         tracing::warn!(result = %cmgf.result, "AT+CMGF=1 before send returned non-OK");
     }
 
+    // Select the TE character set and over-the-air data-coding scheme for this
+    // message. UCS2 needs CSCS="UCS2" (so the modem reads our hex address/body)
+    // and CSMP DCS=8 (so the recipient decodes UCS2). The defaults are restored
+    // afterwards on every path so later GSM-7 sends and the +COPS operator
+    // parsing in the status refresh are never misread as UCS2.
+    if encoding == SmsEncoding::Ucs2 {
+        set_charset(t, "UCS2", "17,167,0,8", timeout).await?;
+    }
+
+    let outcome = send_all_segments(t, cfg, db, to, &segments, encoding).await;
+
+    if encoding == SmsEncoding::Ucs2 {
+        // Best-effort restore; a disconnect here is healed by re-initialization
+        // on the next reconnect.
+        let _ = set_charset(t, "IRA", "17,167,0,0", timeout).await;
+    }
+
+    outcome
+}
+
+/// Sets the TE character set (`AT+CSCS`) and SMS text-mode parameters
+/// (`AT+CSMP`, whose last field is the data-coding scheme) for the messages
+/// about to be sent. Non-OK results are logged but not treated as fatal.
+async fn set_charset<T: SerialTransport>(
+    t: &mut T,
+    cscs: &str,
+    csmp: &str,
+    timeout: Duration,
+) -> std::io::Result<()> {
+    let cscs_ex = exchange(t, &format!("AT+CSCS=\"{cscs}\""), timeout).await?;
+    if !cscs_ex.result.is_ok() {
+        tracing::warn!(charset = cscs, result = %cscs_ex.result, "AT+CSCS returned non-OK");
+    }
+    let csmp_ex = exchange(t, &format!("AT+CSMP={csmp}"), timeout).await?;
+    if !csmp_ex.result.is_ok() {
+        tracing::warn!(params = csmp, result = %csmp_ex.result, "AT+CSMP returned non-OK");
+    }
+    Ok(())
+}
+
+/// Sends every segment of a message in order, stopping at the first part that
+/// does not reach [`MessageStatus::Sent`]. Kept separate from [`handle_send`] so
+/// the UCS2 charset is always restored after this returns, on every path.
+async fn send_all_segments<T: SerialTransport>(
+    t: &mut T,
+    cfg: &Config,
+    db: &Db,
+    to: &str,
+    segments: &[Segment],
+    encoding: SmsEncoding,
+) -> std::io::Result<SendResult> {
     let mut last_reference = None;
-    for segment in &segments {
-        let result = send_part_with_retries(t, cfg, db, to, &segment.text).await?;
+    for segment in segments {
+        let result = send_part_with_retries(t, cfg, db, to, &segment.text, encoding).await?;
         match result.status {
             MessageStatus::Sent => last_reference = result.reference,
-
             _ => return Ok(result),
         }
     }
