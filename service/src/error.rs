@@ -213,3 +213,128 @@ impl fmt::Display for SubscriberInitError {
 }
 
 impl std::error::Error for SubscriberInitError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn api_error_new_preserves_message_and_fields() {
+        let err = ApiError::new("bad input", vec!["to".to_string(), "body".to_string()]);
+
+        assert_eq!(err.error, "bad input");
+        assert_eq!(err.fields, vec!["to".to_string(), "body".to_string()]);
+    }
+
+    #[test]
+    fn segment_error_display_names_required_parts() {
+        let err = SegmentError::TooManyParts { required: 11 };
+
+        assert_eq!(
+            err.to_string(),
+            "message requires 11 parts which exceeds the maximum of 10"
+        );
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn config_error_key_and_display_cover_all_variants() {
+        let missing = ConfigError::MissingKey("LISTEN_ADDR".to_string());
+        assert_eq!(missing.key(), Some("LISTEN_ADDR"));
+        assert_eq!(
+            missing.to_string(),
+            "missing required configuration value: LISTEN_ADDR"
+        );
+
+        let invalid = ConfigError::InvalidValue {
+            key: "BAUD_RATE".to_string(),
+            value: "fast".to_string(),
+            reason: "expected a non-negative integer".to_string(),
+        };
+        assert_eq!(invalid.key(), Some("BAUD_RATE"));
+        assert_eq!(
+            invalid.to_string(),
+            "invalid configuration value for BAUD_RATE (`fast`): expected a non-negative integer"
+        );
+
+        let file_read = ConfigError::FileRead {
+            path: "config.yaml".to_string(),
+            reason: "permission denied".to_string(),
+        };
+        assert_eq!(file_read.key(), None);
+        assert_eq!(
+            file_read.to_string(),
+            "failed to read configuration file config.yaml: permission denied"
+        );
+    }
+
+    #[test]
+    fn db_error_display_source_and_ready_predicate_cover_all_variants() {
+        let not_ready = DbError::NotReady;
+        assert!(not_ready.is_not_ready());
+        assert_eq!(not_ready.to_string(), "database schema is not ready");
+        assert!(not_ready.source().is_none());
+
+        let sqlx = DbError::Sqlx(sqlx::Error::RowNotFound);
+        assert!(!sqlx.is_not_ready());
+        assert_eq!(
+            sqlx.to_string(),
+            "database error: no rows returned by a query that expected to return at least one row"
+        );
+        assert!(sqlx.source().is_some());
+
+        let migration = DbError::Migration {
+            version: 2,
+            source: sqlx::Error::RowNotFound,
+        };
+        assert_eq!(
+            migration.to_string(),
+            "migration 2 failed: no rows returned by a query that expected to return at least one row"
+        );
+        assert!(migration.source().is_some());
+    }
+
+    #[test]
+    fn run_error_display_and_config_key_cover_all_variants() {
+        let config = RunError::Config(ConfigError::MissingKey("DATABASE_PATH".to_string()));
+        assert_eq!(config.config_key(), Some("DATABASE_PATH"));
+        assert_eq!(
+            config.to_string(),
+            "configuration error: missing required configuration value: DATABASE_PATH"
+        );
+
+        let db = RunError::Db(DbError::NotReady);
+        assert_eq!(db.config_key(), None);
+        assert_eq!(
+            db.to_string(),
+            "database error during startup: database schema is not ready"
+        );
+
+        let bind = RunError::Bind(io::Error::new(io::ErrorKind::AddrInUse, "busy"));
+        assert_eq!(bind.to_string(), "failed to bind listen address: busy");
+
+        let serve = RunError::Serve(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
+        assert_eq!(serve.to_string(), "http server error: closed");
+
+        assert_eq!(
+            RunError::ShutdownTimeout.to_string(),
+            "graceful shutdown exceeded the 30s grace period; aborting"
+        );
+        assert_eq!(
+            RunError::AdminSetup("password must not be empty".to_string()).to_string(),
+            "admin setup error: password must not be empty"
+        );
+    }
+
+    #[test]
+    fn subscriber_init_error_display_and_source() {
+        let err = SubscriberInitError("already initialized".to_string());
+
+        assert_eq!(
+            err.to_string(),
+            "failed to initialize logging subscriber: already initialized"
+        );
+        assert!(err.source().is_none());
+    }
+}

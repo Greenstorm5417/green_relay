@@ -7,25 +7,32 @@ const E164_MAX_DIGITS: usize = 15;
 pub use crate::error::ValidationError;
 
 pub fn validate_e164(s: &str) -> Result<(), ValidationError> {
-    let digits = match s.strip_prefix('+') {
-        Some(rest) => rest,
+    let bytes = s.as_bytes();
+    let digits = match bytes.split_first() {
+        Some((b'+', rest)) => rest,
         None => return Err(ValidationError::InvalidPhoneNumber),
+        Some(_) => return Err(ValidationError::InvalidPhoneNumber),
     };
 
-    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if !(E164_MIN_DIGITS..=E164_MAX_DIGITS).contains(&digits.len()) {
         return Err(ValidationError::InvalidPhoneNumber);
     }
 
-    let len = digits.len();
-    if (E164_MIN_DIGITS..=E164_MAX_DIGITS).contains(&len) {
-        Ok(())
-    } else {
-        Err(ValidationError::InvalidPhoneNumber)
+    for b in digits {
+        if !b.is_ascii_digit() {
+            return Err(ValidationError::InvalidPhoneNumber);
+        }
     }
+
+    Ok(())
 }
 
 pub fn validate_body(body: &str) -> Result<(), ValidationError> {
-    let len = body.chars().count();
+    let len = if body.is_ascii() {
+        body.len()
+    } else {
+        body.chars().count()
+    };
     if len == 0 {
         Err(ValidationError::BodyEmpty)
     } else if len > MAX_BODY_CHARS {
@@ -163,22 +170,98 @@ pub struct Segment {
 
 pub use crate::error::SegmentError;
 
-/// GSM 03.38 default-alphabet characters that occupy a single septet.
-const GSM7_BASIC: &str = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
-
-/// GSM 03.38 extension characters that occupy two septets (ESC + char).
-const GSM7_EXTENDED: &str = "^{}\\[~]|€";
-
 /// Returns the septet cost of `c` in the GSM 03.38 alphabet, or `None` if the
 /// character is not representable in GSM-7 (so the message must use UCS2).
 fn gsm7_septets(c: char) -> Option<usize> {
-    if GSM7_EXTENDED.contains(c) {
-        Some(2)
-    } else if GSM7_BASIC.contains(c) {
-        Some(1)
+    match c {
+        '^' | '{' | '}' | '\\' | '[' | '~' | ']' | '|' | '€' => Some(2),
+        '@'
+        | '\n'
+        | '\r'
+        | ' '..='?'
+        | 'A'..='Z'
+        | 'a'..='z'
+        | '£'
+        | '¥'
+        | 'è'
+        | 'é'
+        | 'ù'
+        | 'ì'
+        | 'ò'
+        | 'Ç'
+        | 'Ø'
+        | 'ø'
+        | 'Å'
+        | 'å'
+        | 'Δ'
+        | '_'
+        | 'Φ'
+        | 'Γ'
+        | 'Λ'
+        | 'Ω'
+        | 'Π'
+        | 'Ψ'
+        | 'Σ'
+        | 'Θ'
+        | 'Ξ'
+        | 'Æ'
+        | 'æ'
+        | 'ß'
+        | 'É'
+        | '¤'
+        | '¡'
+        | 'Ä'
+        | 'Ö'
+        | 'Ñ'
+        | 'Ü'
+        | '§'
+        | '¿'
+        | 'ä'
+        | 'ö'
+        | 'ñ'
+        | 'ü'
+        | 'à' => Some(1),
+        _ => None,
+    }
+}
+
+fn simple_ascii_gsm7_len(s: &str) -> Option<usize> {
+    if s.bytes().all(|b| {
+        matches!(
+            b,
+            b'\n' | b'\r' | b'@' | b'_' | b' '..=b'?' | b'A'..=b'Z' | b'a'..=b'z'
+        )
+    }) {
+        Some(s.len())
     } else {
         None
     }
+}
+
+fn segment_simple_ascii_gsm7(body: &str, len: usize) -> Result<Vec<Segment>, SegmentError> {
+    if len <= SINGLE_PART_MAX {
+        return Ok(vec![Segment {
+            seq: 1,
+            text: body.to_string(),
+        }]);
+    }
+
+    let required = len.div_ceil(MULTI_PART_MAX);
+    if required > MAX_PARTS {
+        return Err(SegmentError::TooManyParts { required });
+    }
+
+    let mut segments = Vec::with_capacity(required);
+    let mut start = 0usize;
+    while start < len {
+        let end = start.saturating_add(MULTI_PART_MAX).min(len);
+        segments.push(Segment {
+            seq: segments.len().saturating_add(1) as u8,
+            text: body.get(start..end).unwrap_or_default().to_owned(),
+        });
+        start = end;
+    }
+    Ok(segments)
 }
 
 /// Returns true if every character in `s` is representable in GSM-7.
@@ -259,6 +342,10 @@ fn segment_by<F: Fn(char) -> usize>(
 /// GSM-7 bodies are measured in septets (160/153), UCS2 bodies in UTF-16 code
 /// units (70/67).
 pub fn segment_message(body: &str) -> Result<Vec<Segment>, SegmentError> {
+    if let Some(len) = simple_ascii_gsm7_len(body) {
+        return segment_simple_ascii_gsm7(body, len);
+    }
+
     match message_encoding(body) {
         SmsEncoding::Gsm7 => segment_by(
             body,

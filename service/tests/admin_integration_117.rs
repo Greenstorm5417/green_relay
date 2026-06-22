@@ -32,6 +32,7 @@ use chrono::Utc;
 use green_relay::admin::{AdminState, ModemStatusProvider, SESSION_COOKIE, hash_password};
 use green_relay::db::Db;
 use green_relay::health::{ModemStatusSnapshot, SimStatus};
+use serde_json::Value;
 use tower::ServiceExt; // for `oneshot`
 
 // ---------------------------------------------------------------------------
@@ -190,6 +191,10 @@ impl Response {
         let end = rest.find('"')?;
         Some(rest[..end].to_string())
     }
+
+    fn json(&self) -> Value {
+        serde_json::from_str(&self.body).expect("response body is valid JSON")
+    }
 }
 
 // -- request builders -------------------------------------------------------
@@ -218,6 +223,35 @@ fn post_form(path: &str, body: &str) -> Request<Body> {
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(Body::from(body.to_owned()))
         .unwrap()
+}
+
+fn post_json(path: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_owned()))
+        .unwrap()
+}
+
+fn get_json_with_cookie(path: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(path)
+        .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn post_json_with_cookie(path: &str, token: &str, csrf: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"));
+    if let Some(csrf) = csrf {
+        builder = builder.header("x-csrf-token", csrf);
+    }
+    builder.body(Body::empty()).unwrap()
 }
 
 fn post_with_cookie(path: &str, token: &str) -> Request<Body> {
@@ -267,6 +301,32 @@ async fn login(harness: &Harness, username: &str, password: &str) -> String {
     response
         .session_token()
         .expect("login sets a session cookie")
+}
+
+/// Log in through the JSON API and return the session cookie token plus the
+/// CSRF synchronizer token returned by `/api/admin/session`.
+async fn json_login(harness: &Harness, username: &str, password: &str) -> (String, String) {
+    let response = harness
+        .send(post_json(
+            "/api/admin/login",
+            &format!(r#"{{"username":"{username}","password":"{password}"}}"#),
+        ))
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    let token = response
+        .session_token()
+        .expect("JSON login sets a session cookie");
+
+    let session = harness
+        .send(get_json_with_cookie("/api/admin/session", &token))
+        .await;
+    assert_eq!(session.status, StatusCode::OK);
+    let csrf = session.json()["csrfToken"]
+        .as_str()
+        .expect("session response carries csrfToken")
+        .to_string();
+
+    (token, csrf)
 }
 
 // ---------------------------------------------------------------------------
@@ -503,4 +563,132 @@ async fn state_changing_post_without_csrf_token_is_forbidden() {
         .await
         .expect("count keys");
     assert_eq!(count, 0, "CSRF-rejected requests create no key");
+}
+
+#[tokio::test]
+async fn json_admin_login_session_dashboard_and_logout_flow() {
+    let harness = Harness::build().await;
+    harness.seed_admin("admin", "json-pass").await;
+
+    let failed = harness
+        .send(post_json(
+            "/api/admin/login",
+            r#"{"username":"admin","password":"wrong"}"#,
+        ))
+        .await;
+    assert_eq!(failed.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(failed.json()["error"], "Invalid username or password.");
+
+    let (token, csrf) = json_login(&harness, "admin", "json-pass").await;
+
+    let dashboard = harness
+        .send(get_json_with_cookie("/api/admin/dashboard", &token))
+        .await;
+    assert_eq!(dashboard.status, StatusCode::OK);
+    let body = dashboard.json();
+    assert_eq!(body["health"], "healthy");
+    assert_eq!(body["modem"]["serialConnected"], true);
+    assert_eq!(body["modem"]["simStatus"], "ready");
+    assert_eq!(body["modem"]["operator"], "Test Carrier");
+    assert!(body["activity"].as_array().unwrap().is_empty());
+
+    let missing_csrf = harness
+        .send(post_json_with_cookie("/api/admin/logout", &token, None))
+        .await;
+    assert_eq!(missing_csrf.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        missing_csrf.json()["error"],
+        "Invalid or missing CSRF token."
+    );
+
+    let logout = harness
+        .send(post_json_with_cookie(
+            "/api/admin/logout",
+            &token,
+            Some(&csrf),
+        ))
+        .await;
+    assert_eq!(logout.status, StatusCode::OK);
+    assert!(
+        logout
+            .set_cookie
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Max-Age=0"),
+        "logout clears the session cookie"
+    );
+
+    let after = harness
+        .send(get_json_with_cookie("/api/admin/session", &token))
+        .await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn json_admin_key_management_flow() {
+    let harness = Harness::build().await;
+    harness.seed_admin("admin", "json-pass").await;
+    let (token, csrf) = json_login(&harness, "admin", "json-pass").await;
+
+    let unauthenticated = harness.send(get("/api/admin/keys")).await;
+    assert_eq!(unauthenticated.status, StatusCode::UNAUTHORIZED);
+
+    let empty = harness
+        .send(get_json_with_cookie("/api/admin/keys", &token))
+        .await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert!(empty.json().as_array().unwrap().is_empty());
+
+    let missing_csrf = harness
+        .send(post_json_with_cookie("/api/admin/keys", &token, None))
+        .await;
+    assert_eq!(missing_csrf.status, StatusCode::FORBIDDEN);
+
+    let created = harness
+        .send(post_json_with_cookie(
+            "/api/admin/keys",
+            &token,
+            Some(&csrf),
+        ))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let body = created.json();
+    assert!(
+        body["plaintext"].as_str().unwrap().starts_with("sk_"),
+        "created response returns the one-time plaintext key"
+    );
+    let key_id = body["key"]["id"].as_i64().expect("created key has an id");
+    assert_eq!(body["key"]["revoked"], false);
+
+    let listed = harness
+        .send(get_json_with_cookie("/api/admin/keys", &token))
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    let keys = listed.json();
+    assert_eq!(keys.as_array().unwrap().len(), 1);
+    assert_eq!(keys[0]["id"], key_id);
+
+    let revoke_missing_csrf = harness
+        .send(post_json_with_cookie(
+            &format!("/api/admin/keys/{key_id}/revoke"),
+            &token,
+            None,
+        ))
+        .await;
+    assert_eq!(revoke_missing_csrf.status, StatusCode::FORBIDDEN);
+
+    let revoked = harness
+        .send(post_json_with_cookie(
+            &format!("/api/admin/keys/{key_id}/revoke"),
+            &token,
+            Some(&csrf),
+        ))
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK);
+
+    let after = harness
+        .send(get_json_with_cookie("/api/admin/keys", &token))
+        .await;
+    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(after.json()[0]["revoked"], true);
 }
