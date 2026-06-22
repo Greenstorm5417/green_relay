@@ -63,7 +63,7 @@ argon2 = "0.5.3"
 # the `getrandom` feature only reaches argon2's salt generator (`OsRng`) when
 # this resolves to the same crate version argon2 depends on. 0.6 needs the
 # unreleased argon2 0.6.0-rc, so it stays on 0.5 until argon2 0.6 is stable.
-password-hash = { version = "0.5", features = ["getrandom"] }
+password-hash = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.11.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
