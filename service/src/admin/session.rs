@@ -10,13 +10,11 @@ use std::time::{Duration, Instant};
 
 use argon2::{
     Argon2,
-    password_hash::{
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
-        rand_core::{OsRng, RngCore},
-    },
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, header};
+use rand_core::{OsRng, RngCore};
 
 use super::AdminState;
 
@@ -415,7 +413,7 @@ mod tests {
 
     #[test]
     fn session_valid_just_under_timeout() {
-        let now = Instant::now();
+        let now = Instant::now() + SESSION_IDLE_TIMEOUT;
         let session = Session {
             admin_id: 1,
             last_activity: now - (SESSION_IDLE_TIMEOUT - Duration::from_secs(1)),
@@ -426,7 +424,7 @@ mod tests {
 
     #[test]
     fn session_invalid_at_and_after_timeout() {
-        let now = Instant::now();
+        let now = Instant::now() + SESSION_IDLE_TIMEOUT + Duration::from_secs(1);
         let at_boundary = Session {
             admin_id: 1,
             last_activity: now - SESSION_IDLE_TIMEOUT,
